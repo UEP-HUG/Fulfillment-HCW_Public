@@ -85,3 +85,5 @@ rsconnect/
 # Version control these files
 !output/data_dictionary_ISCO_recoded_essential_plus_health_workers.xlsx
 !README.md
+!mediation_assumptions.png
+!PFI_DAG_240516.jpeg
