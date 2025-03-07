@@ -1,0 +1,470 @@
+---
+title: "Longitudinal analyses for PHQ2 and GAD2 by Occupational grouping"
+author: "Anshu Uppal"
+date: "`r lubridate::today()`"
+output: 
+  html_document:
+    code_folding: hide
+    keep_md: yes
+    # toc: true
+    # toc_depth: 4
+    # toc_float:
+    #   collapsed: false
+    #   smooth_scroll: true
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input, 
+      output_dir = here::here("output")
+    )
+  })
+---
+
+```{r longitudinal-setup, results = "hide", message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, 
+                      dev = "png", dpi = 400) # compression = "lzw"
+options(width = 300)
+
+# Load packages and dataset ####
+pacman::p_load(
+  tidyverse,
+  lubridate,
+  here,
+  forestplot,
+  conflicted,
+  jtools,       # scaling and centering
+  DescTools,    # package for Cramer's V
+  ggcorrplot,    # correlation matrix
+  mediation,     # mediation analyses
+  corrplot,
+  lavaan,       # Structural equation models
+  lavaanPlot,
+  lme4, # package for multilevel model functions
+  lmerTest, # package adds p-values to summary of MLM estimates
+  lspline,  # package for adding splines to model
+  r2mlm, # package for estimating R^2 at different levels of the model
+  effects, # package for visualizing model results
+  ordinal, # package for fitting a variety of mixed effects models for categorical outcomes
+  marginaleffects,
+  optimx,
+  broom.mixed,
+  flextable,
+  grid,
+  gridExtra,
+  patchwork  # package allows for simple side-by-side plotting of ggplot objects
+)
+conflicts_prefer(lmerTest::lmer)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::select)
+
+source(here::here("code", "flowchart.R")) # Source the flowchart codefile to get final list of participants after filters are applied
+
+# define standard myflextable function 
+myflextable = function(data, ...) {
+  set_flextable_defaults(na_str = "NA", theme_fun = theme_booktabs, font.size = 12, padding.bottom = 1, padding.top = 1)
+  x = flextable(data, ...)
+  x = colformat_int(x, big.mark = "")
+  x = colformat_double(x, big.mark = "", 
+                       digits = 2,
+                       na_str = "NA")
+  return(x)
+}
+
+# Longitudinal data prep ####
+# dat_master_final <- readRDS(here("data", "long_cleaned.rds"))
+dat_master_final <- readRDS(here("data", "long_cleaned.rds")) |> 
+  inner_join(filtered_ids_all) |> 
+  filter(!questionnaire %in% c(
+    "inclusion"
+    , "gh_21", "mental_21", "st_22")) |>
+  filter(!is.na(date_soumission))
+
+zero_point = as_date("2021-06-01")
+zero_point_1 = as_date("2021-03-01")
+zero_point_2 = as_date("2021-09-01")
+
+dat_longitudinal_all <- dat_master_final |> 
+  group_by(questionnaire) |> mutate(questionnaire_date = as_date(round_date(mean(date_soumission), "month"))) |> ungroup() |>
+  mutate(
+    codbar = factor(codbar),
+    timepoint_years = time_length(date_soumission - min(date_soumission, na.rm = TRUE), "years"),
+    timepoint_years_Q = time_length(questionnaire_date - min(questionnaire_date, na.rm = TRUE), "years"),
+    
+    
+    # Two slopes
+    Time1 = case_when(date_soumission >= zero_point ~ 0,
+                      .default = time_length(date_soumission - zero_point, "years")),
+    Time2 = case_when(date_soumission <= zero_point ~ 0,
+                      .default = time_length(date_soumission - zero_point, "years")),
+    
+    # Questionnaire timepoints
+    Time1_Q = case_when(questionnaire_date >= zero_point ~ 0,
+                        .default = time_length(questionnaire_date - zero_point, "years")),
+    Time2_Q = case_when(questionnaire_date <= zero_point ~ 0,
+                        .default = time_length(questionnaire_date - zero_point, "years")),
+    
+    Time1_Q_alt = time_length(questionnaire_date - zero_point, "years"),
+    Time1_Q_alt = case_when(Time1_Q_alt > 0 ~ NA, .default = Time1_Q_alt),
+    Time2_Q_alt = time_length(questionnaire_date - zero_point, "years"),
+    Time2_Q_alt = case_when(Time2_Q_alt < 0 ~ NA, .default = Time2_Q_alt),
+    
+    timepoint_years_r = plyr::round_any(timepoint_years, 0.038),
+    timepoint_years_f = factor(timepoint_years_r),
+    date_soumission_r = floor_date(date_soumission, "1 day"),
+    occupation_type.single = fct_recode(occupation_type.single, "Other essential worker" = "Other key worker"),
+    occupation_type.single = 
+      factor(occupation_type.single,
+             levels = c("General workforce", "Healthcare worker", "Other essential worker"
+                        , "Unknown"
+             )),
+    c_age_nov20_r = plyr::round_any(c_age_nov20, 10)
+  ) |> 
+  relocate(starts_with("Time"), timepoint_years_r, timepoint_years_f, questionnaire_date, .after = timepoint_years) |> 
+  relocate(date_soumission_r, .after = date_soumission) |> 
+  droplevels()
+start_date <- min(dat_longitudinal_all$questionnaire_date)
+# calculate the timepoint of the "zero_point" to show it in the descriptive visualization below
+rect_time <- time_length(zero_point - min(dat_longitudinal_all$date_soumission), "years")
+
+# Visualise the data ####
+dat_longitudinal_long_all <- dat_longitudinal_all |> 
+  pivot_longer(
+    cols = c(PHQ2_score, GAD2_score),
+    names_to = "Scale",
+    values_to = "Score",
+    values_drop_na = TRUE
+  )
+
+set.seed(2024)
+```
+
+# Longitudinal analyses {.tabset}
+## Plotting of overall trends (Feb '21 to Nov '23)
+```{r longitudinal-plot-restricted, fig.width = 10, fig.height = 3.5}
+dat_longitudinal <- dat_longitudinal_all |> 
+  filter(!questionnaire %in% c("Monthly_Nov_20", "Monthly_Dec_20", "Monthly_Jan_21", 
+                               "gh_21", "gh_24", "mental_21", "st_22")) |>
+  mutate(
+    timepoint_years = time_length(date_soumission - min(date_soumission, na.rm = TRUE), "years"),
+    timepoint_years_r = plyr::round_any(timepoint_years, 0.04),
+    timepoint_years_Q = time_length(questionnaire_date - min(questionnaire_date, na.rm = TRUE), "years"),
+    
+    
+    # Make age group at t = 0
+    age_feb21 = time_length(as_date("2021-02-01")-birthdate.inc, "years"),
+    # Center the continuous age variable
+    c_age_feb21 = age_feb21 - mean(age_feb21, na.rm = TRUE),
+    age_cat_feb21 = factor(case_when(     
+      age_feb21 < 25 ~ "18-24",
+      age_feb21 >= 25 & age_feb21 < 35 ~ "25-34",
+      age_feb21 >= 35 & age_feb21 < 45 ~ "35-44",
+      age_feb21 >= 45 & age_feb21 < 55 ~ "45-54",
+      age_feb21 >= 55 & age_feb21 < 65 ~ "55-64",
+      age_feb21 >= 65 ~ "65+")),
+    age_cat_feb21 = fct_relevel(age_cat_feb21, "25-34")
+  ) |> 
+  droplevels()
+
+# calculate the timepoint of the "zero_point" to show it in the descriptive visualization below
+rect_time <- time_length(zero_point - min(dat_longitudinal$date_soumission), "years")
+
+# Visualise the data ####
+dat_longitudinal_long <- dat_longitudinal |> 
+  pivot_longer(
+    cols = c(PHQ2_score, GAD2_score),
+    names_to = "Scale",
+    values_to = "Score",
+    values_drop_na = TRUE
+  ) |> 
+  mutate(Scale = recode(Scale, PHQ2_score = "PHQ2 score", GAD2_score = "GAD2 score"), Scores = Score)
+
+
+dat_summary_occup <- dat_longitudinal_long |> 
+  filter(!is.na(Score)) |> 
+  # filter(!is.na(health_numeric)) |> 
+  group_by(
+    # timepoint_years_r,
+    timepoint_years_Q,
+    # date_soumission_r,
+    # questionnaire_date,
+    Scale
+    #,  questionnaire
+    , occupation_type.single
+    # , sex_en.inc
+  ) |>
+  reframe(
+    Score = mean(Score),
+    N = n(),
+    se = sd(Scores)/sqrt(N),   # standard error
+    ci.lower = Score - 1.96*se,
+    ci.upper = Score + 1.96*se
+  ) |> ungroup()
+
+dat_summary_all <- dat_longitudinal_long |> 
+  filter(!is.na(Score)) |> 
+  mutate(occupation_type.single = "All") |> 
+  # filter(!is.na(health_numeric)) |> 
+  group_by(
+    # timepoint_years_r,
+    timepoint_years_Q,
+    # date_soumission_r,
+    # questionnaire_date,
+    Scale
+    #,  questionnaire
+    , occupation_type.single
+    # , sex_en.inc
+  ) |>
+  reframe(
+    Score = mean(Score),
+    N = n(),
+    se = sd(Scores)/sqrt(N),   # standard error
+    ci.lower = Score - 1.96*se,
+    ci.upper = Score + 1.96*se
+  ) |> ungroup()
+
+dat_summary <- rbind(dat_summary_occup, dat_summary_all)
+dat_plot_all <- rbind(dat_longitudinal_long, dat_longitudinal_long |> mutate(occupation_type.single = "All"))
+
+# # Open filesave as TIFF
+# tiff(filename = here("output", "publication figures",
+# 
+#                      paste0(format(Sys.time(), "%Y-%m-%d-%H%M_"),"GAD_PHQ_trend", ".tif")),
+# 
+#      # width=8.3, height=4, # by occupation
+#      width=4, height=4, # overall
+#      units = "in", res = 700, compression = "lzw")
+
+## Pretty plot of GAD2/PHQ2 over time ####
+ggplot() +
+  geom_point(
+    data = dat_summary,
+    # data = dat_summary_occup |> filter(occupation_type.single == "Other essential worker"),
+    aes(
+      # x = timepoint_years_r,
+      # x = date_soumission_r,
+      # x = questionnaire_date,
+      x = timepoint_years_Q,
+      y = Score, 
+      color = Scale
+      # , color = occupation_type.single
+      , size = N
+    ))+
+  # geom_path(
+  #   data = dat_summary,
+  #   # data = dat_summary_occup |> filter(occupation_type.single == "Other essential worker"),
+  #            aes(
+  #              # x = timepoint_years_r,
+  #              # x = date_soumission_r,
+  #              x = questionnaire_date,
+  #              # x = timepoint_years_Q,
+  #              y = Score,
+  #              color = Scale
+  #              # color = occupation_type.single,
+  #              # , size = N
+  #            )
+  # )+
+  geom_smooth(
+    data = dat_plot_all , #|> filter(occupation_type.single == "Other essential worker"),
+    # data = dat_longitudinal_long,
+    aes(
+      x = timepoint_years,
+      # x = questionnaire_date,
+      # x = date_soumission,
+      # x = timepoint_years,
+      y = Score,
+      color = Scale,
+      # color = occupation_type.single
+    )
+    # , method = "gam"
+    , formula = y ~ s(x, bs = "cs", k=9)
+  )+
+  facet_wrap(.~occupation_type.single, nrow = 1)+
+  # facet_wrap(.~Scale, nrow = 1)+
+  # facet_wrap(.~"Overall")+
+  # geom_vline(xintercept = rect_time, color = "darkblue")+ # inflection point to mark boundary between "phases"
+  # geom_vline(xintercept = zero_point, color = "blue")+ # inflection point to mark boundary between "phases"
+  theme_bw()+
+  labs(x = "Submission date", color = NULL)+
+  theme(axis.text.x = element_text(angle = 90, size = 10, vjust = 0.3)
+        ,panel.grid.minor = element_blank()
+        , axis.title.x = element_blank()
+  )+coord_cartesian(ylim = c(0.4,1.5))
+```
+
+
+## Cronbach alpha
+### PHQ2
+```{r cronbach-PHQ2}
+dat_longitudinal %>% 
+  select(starts_with("PHQ2_points")) %>% 
+  psych::alpha(cumulative = TRUE, na.rm = FALSE)
+```
+
+### GAD2
+```{r cronbach-GAD2}
+dat_longitudinal %>% select(starts_with("GAD2_points")) %>% 
+  psych::alpha(cumulative = TRUE, na.rm = FALSE)
+```
+
+# Piecewise growth models with splines
+```{r}
+# Three phase growth model ####
+time_length(as_date("2021-06-01") - as_date("2021-02-01"), "years") # get the times for the turning points
+time_length(as_date("2022-04-01") - as_date("2021-02-01"), "years")
+spline_knots = c(0.3285421, 1.160849) # variable with turning point knots values
+```
+
+## PHQ
+```{r}
+# PHQ
+PHQ_m0.3 <- lmer(PHQ2_score ~ 1 + lspline(timepoint_years, knots = c(0.3285421, 1.160849)) + (1+ lspline(timepoint_years, knots = c(0.3285421, 1.160849)) |codbar),
+                 data= dat_longitudinal,
+                 REML = FALSE,
+                 control = lmerControl(
+                   optimizer ='optimx', optCtrl=list(method='L-BFGS-B', maxit=2e4))
+)
+# plot(predictorEffects(PHQ_m0.3))
+
+
+
+PHQ_full_model_3 <- update(PHQ_m0.3, .~. + occupation_type.single
+                           + sex_en.inc + c_age_feb21 + education_rec_en.inc
+                           + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc
+                           + swiss_national.inc
+                           # Interactions Time
+                           + occupation_type.single:lspline(timepoint_years, knots = c(0.3285421, 1.160849)) 
+                           + sex_en.inc:lspline(timepoint_years, knots = c(0.3285421, 1.160849)) 
+                           + c_age_feb21:lspline(timepoint_years, knots = c(0.3285421, 1.160849)) 
+                           + education_rec_en.inc:lspline(timepoint_years, knots = c(0.3285421, 1.160849))
+)
+saveRDS(PHQ_full_model_3, here::here("output", paste0(format(Sys.time(), "%Y-%m-%d-%H%M_"), "PHQ_full_model_3.rda")))  
+
+summary(PHQ_full_model_3)
+# attr(PHQ_full_model_3@frame, which = "names")
+
+
+PHQ_full_table_3 <- broom.mixed::tidy(PHQ_full_model_3,conf.int=TRUE,exponentiate=FALSE,effects="fixed") |>
+  mutate(p.value = case_when(p.value < 0.001 ~ "<0.001",
+                             .default = as.character(round(p.value,3))
+  )) |>
+  select(-c(std.error, statistic, df, effect)) |> relocate(p.value,.after = last_col())
+
+myflextable(PHQ_full_table_3) |>
+  # bold(i = c(4:5, 28:31)) |>
+  width(j = 1, 10, unit = "in")
+```
+
+## GAD
+```{r}
+GAD_m0.3 <- lmer(GAD2_score ~ 1 + lspline(timepoint_years, knots = c(0.3285421, 1.160849)) + (1+ lspline(timepoint_years, knots = c(0.3285421, 1.160849)) |codbar),
+                 data= dat_longitudinal,
+                 REML = FALSE,
+                 control = lmerControl(
+                   optimizer ='optimx', optCtrl=list(method='L-BFGS-B', maxit=2e4))
+)
+
+# plot(predictorEffects(GAD_m0.3))
+
+GAD_full_model_3 <- update(GAD_m0.3, .~. + occupation_type.single
+                           + sex_en.inc + c_age_feb21 + education_rec_en.inc
+                           + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc
+                           + swiss_national.inc
+                           # Interactions Time
+                           + occupation_type.single:lspline(timepoint_years, knots = c(0.3285421, 1.160849)) 
+                           + sex_en.inc:lspline(timepoint_years, knots = c(0.3285421, 1.160849)) 
+                           + c_age_feb21:lspline(timepoint_years, knots = c(0.3285421, 1.160849)) 
+                           + education_rec_en.inc:lspline(timepoint_years, knots = c(0.3285421, 1.160849))
+)
+saveRDS(GAD_full_model_3, here::here("output", paste0(format(Sys.time(), "%Y-%m-%d-%H%M_"), "GAD_full_model_3.rda")))  
+
+GAD_full_table_3 <- broom.mixed::tidy(GAD_full_model_3,conf.int=TRUE,exponentiate=FALSE,effects="fixed") |>
+  mutate(p.value = case_when(p.value < 0.001 ~ "<0.001",
+                             .default = as.character(round(p.value,3))
+  )) |>
+  select(-c(std.error, statistic, df, effect)) |> relocate(p.value,.after = last_col())
+
+myflextable(GAD_full_table_3) |>
+  # bold(i = c(4:5, 28:31)) |>
+  width(j = 1, 10, unit = "in")
+```
+
+```{r}
+# Optional read in the datasets from file
+# PHQ_full_model_3 <- readRDS(here(
+#   "output", 
+#   "2024-08-22-1556_PHQ_full_model_3.rda" # Update the datestamp
+# ))
+# GAD_full_model_3 <- readRDS(here(
+#   "output", 
+#   "2024-08-22-1559_GAD_full_model_3.rda" # Update the datestamp
+# ))
+
+```
+
+
+## Plot the models
+```{r, fig.width = 12, fig.height = 6}
+# Plotting ####
+anshu_piecewise_raw_plot = function(df, var, fill_var, var_facet, outcome) {
+  df = df |> mutate(outcome = outcome)
+  layer0 = ggplot() +
+    geom_line(data = df, aes(x = timepoint_years_Q, y = estimate, color = occupation_type.single)) +
+    geom_ribbon(data = df, aes(x = timepoint_years_Q, y = estimate, 
+                               ymin = conf.low, ymax = conf.high, fill = occupation_type.single), alpha = 0.2) +
+    geom_point(data = dat_summary |> 
+                 filter(Scale == outcome, occupation_type.single != "All") #|> mutate(questionnaire_date = as.POSIXct(questionnaire_date))
+               ,
+               aes(
+                 # x = timepoint_years_r,
+                 x = timepoint_years_Q,
+                 # x = date_soumission_r,
+                 # x = questionnaire_date,
+                 y = Score,
+                 color = occupation_type.single,
+                 shape = occupation_type.single
+               ), size = 3)+
+    theme_bw() +
+    coord_cartesian(ylim = c(0.5, 1.65))+
+    labs(x = "Years (T0 = Feb 2021)")+
+    theme(legend.position = c(0.5, 0.8),
+          legend.background = element_rect(fill = "transparent"), # Make legend background transparent
+          legend.title = element_blank(),
+          panel.grid.minor = element_blank(),
+          axis.title.x = element_text(size = 20),
+          axis.text = element_text(size = 15),
+          axis.title.y = element_text(size = 20),
+          legend.key.size = unit(1, "cm"),
+          legend.text = element_text(size = 12)
+    ) # remove minor gridlines
+  # guides(color = FALSE)
+  # coord_cartesian(ylim = case_when(outcome == "PHQ2" ~ c(0,1.5),
+  #                                  .default = c(0,2)))
+  layer1 = switch(unique(df$outcome),
+                  `PHQ2 score` = layer0 + labs(y = "Estimated mean depression score"),
+                  `GAD2 score` = layer0 + labs(y = "Estimated mean anxiety score"))
+  return(layer1)
+}
+
+piecewise_occup_PHQ_alt_3 = marginaleffects::plot_predictions(
+  PHQ_full_model_3, condition = c("timepoint_years", "occupation_type.single"),
+  draw = FALSE, re.form = NA) |> mutate(timepoint_years_Q = timepoint_years)
+
+piecewise_occup_GAD_alt_3 = marginaleffects::plot_predictions(
+  GAD_full_model_3, condition = c("timepoint_years", "occupation_type.single"),
+  draw = FALSE, re.form = NA) |> mutate(timepoint_years_Q = timepoint_years)
+
+
+PHQ_plot_3 <- anshu_piecewise_raw_plot(df = piecewise_occup_PHQ_alt_3, var = "occupation_type.single", outcome = "PHQ2 score")#; PHQ_plot_3
+GAD_plot_3 <- anshu_piecewise_raw_plot(df = piecewise_occup_GAD_alt_3, var = "occupation_type.single", outcome = "GAD2 score")#; GAD_plot_3
+
+# Run this code in a regular R script
+# tiff(filename = here("output", "Publication figures", paste0("spline_effects_raw_updated.tif")),
+#      width=12, height=6, units = "in", res = 400, compression = "lzw")
+# PHQ_plot_3+theme(legend.position = c(0.475, 0.75)) + GAD_plot_3+theme(legend.position = "none")
+# dev.off()
+
+PHQ_plot_3+theme(legend.position = c(0.475, 0.75)) + GAD_plot_3+theme(legend.position = "none")
+ggsave(file = paste0(format(Sys.time(), "%Y-%m-%d-%H%M_"),"main_trajectories.svg"),
+       path = here::here("output", "Publication figures"),
+       height = 6, width = 12)
+
+```

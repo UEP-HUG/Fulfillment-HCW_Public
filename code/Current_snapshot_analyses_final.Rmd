@@ -1,0 +1,3161 @@
+---
+title: "Current snapshot analyses: Santé-travail 2023"
+author: "Anshu Uppal"
+date: "`r lubridate::today()`"
+output: 
+  html_document:
+    code_folding: hide
+    keep_md: yes
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input, 
+      output_dir = here::here("output")
+    )
+  })
+---
+
+```{r setup, results = "hide", message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, 
+                      dev = "png", dpi = 400) # compression = "lzw"
+options(width = 300)
+# Load packages and dataset ####
+pacman::p_load(
+  tidyverse,
+  here,
+  forestplot,
+  conflicted,
+  jtools,       # scaling and centering
+  DescTools,    # package for Cramer's V
+  ggcorrplot,    # correlation matrix
+  mediation,     # mediation analyses
+  corrplot,
+  lavaan,       # Structural equation models
+  lavaanPlot,
+  lme4, # package for multilevel model functions
+  lmerTest, # package adds p-values to summary of MLM estimates
+  r2mlm, # package for estimating R^2 at different levels of the model
+  effects, # package for visualizing model results
+  ordinal, # package for fitting a variety of mixed effects models for categorical outcomes
+  marginaleffects,
+  optimx,
+  broom.mixed,
+  flextable,
+  grid,
+  gridExtra,
+  psych # package for Cronbach's alpha
+)
+conflicts_prefer(lmerTest::lmer)
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(mediation::mediate)
+
+# Snapshot data prep ####
+source(here("code", "prep_st23.R"))
+
+# Functions ####
+# define standard myflextable function 
+myflextable = function(data, ...) {
+  set_flextable_defaults(na_str = "NA", theme_fun = theme_booktabs, font.size = 12, padding.bottom = 1, padding.top = 1)
+  x = flextable(data, ...)
+  x = colformat_int(x, big.mark = "")
+  x = colformat_double(x, big.mark = "", 
+                       digits = 2,
+                       na_str = "NA")
+  return(x)
+}
+
+# function to remove 0 from number (e.g. 0.123 --> .123)
+labelmake = function(x){
+  y = rep(NA, length(x))
+  for(i in 1:length(x)){
+    if(abs(x[i]) > 1){y[i] = sprintf("%.1f", x[i])} else{y[i] = str_replace(sprintf("%.3f", x[i]), "0.", ".")}
+  }
+  return(y)
+}
+
+# Reverse the scale for demands
+dat <- dat |> mutate(inv_demands_karasek.st_23 = 45-demands_karasek.st_23)
+
+dat_scaled <- gscale(data = dat,
+                     # Scale and center the continuous outcomes
+                     vars = c("burnout_score", "PHQ2_score", "PHQ2_score.st_23", "GAD2_score", "GAD2_score.st_23", "PHQ4_score", "health_numeric",
+                              "PFI_score.st_23", "demands_karasek.st_23", "demands_karasek.st_23", "autonomy_karasek.st_23", "social_support_karasek.st_23",
+                              "efforts_siegrist.st_23", "rewards_siegrist.st_23", "ER_ratio.st_23", "overcommitment_siegrist.st_23",
+                              "rewards_esteem_siegrist.st_23", "rewards_security_siegrist.st_23", "rewards_promotion_siegrist.st_23"
+                     ), n.sd = 2) |> 
+  filter(!is.na(PFI_score.st_23)) |> 
+  mutate(
+    occupation_type.single = fct_recode(occupation_type.single, "Other essential worker" = "Other key worker"),
+    # age_cat = fct_relevel(age_cat, "25-34"),
+    age_cat = fct_rev(age_cat),
+    isostrain_karasek.st_23_f = case_when(is.na(isostrain_karasek.st_23)~NA,
+                                          isostrain_karasek.st_23 ~ "Yes",
+                                          .default = "No"),
+    key_subgroup.single = factor(case_when(
+      key_subgroup.single %in% c("Cleaning and sanitation workers", "Other personal care workers", "Transport workers") ~ "Other essential workers",
+      .default = key_subgroup.single),
+      levels = c("Technicians and clerical workers", "Food systems workers", "Manual workers",
+                 "Retail workers", "Security workers", "Other essential workers")),
+    
+    Other_subgroup.single = factor(case_when(
+      Other_subgroup.single %in% c("Craft and related trades workers", "Elementary occupations") ~ "Other",
+      .default = Other_subgroup.single),
+      levels = c("Professionals", "Clerical support workers", "Managers", "Technicians and associate professionals", "Other")),
+    
+    # occupation_type.single = fct_relevel(occupation_type.single, "Healthcare worker"),
+    occupation_type.single_alt = factor(case_when(
+      is.na(occupation_type.single) ~ NA,
+      occupation_type.single == "Healthcare worker" ~ HCW_subgroup.single,
+      occupation_type.single == "Other essential worker" ~ key_subgroup.single,
+      occupation_type.single == "General workforce" ~ Other_subgroup.single,
+      .default = NA),
+      levels = c(levels(Other_subgroup.single),"Medical doctors", "Health managers", "Nursing/paramedical", "Health support workers", 
+                 "Personal care", "Other health workers", 
+                 "Technicians and clerical workers", "Food systems workers", "Manual workers",
+                 "Retail workers", "Security workers", "Other essential workers")),
+    HCW_subgroup.single = factor(HCW_subgroup.single, levels = c("Medical doctors", "Health managers", "Nursing/paramedical", "Health support workers", "Personal care", "Other health workers")),
+    Pre_existing_physical_condition.inc = fct_recode(Pre_existing_physical_condition.inc, "None" = "No", "Pre-existing" = "Yes"),
+    HCW_subgroup.single = fct_recode(HCW_subgroup.single, "Nurses" = "Nursing/paramedical"),
+    occupation_type.single_alt = fct_recode(occupation_type.single_alt, "Nurses" = "Nursing/paramedical"),
+    
+    Other_subgroup_2.single = factor(case_when(
+      occupation_type.single == "General workforce" ~ ISCO_label_2.single)),
+    
+    Other_sectors = fct_relevel(factor(case_when(
+      occupation_type.single == "General workforce" ~ job_sector_harmonized.single)), "Administration publique"),
+    job_sector_harmonized.single = fct_relevel(job_sector_harmonized.single, "Administration publique"),
+    job_sector_harmonized_en_short.single_min = fct_lump_min(job_sector_harmonized_en_short.single, min = 12),
+    
+    job_sector_harmonized_en_short_generalworkers.single = case_when(
+      occupation_type.single == "General workforce" ~ job_sector_harmonized_en_short.single, .default = NA),
+    job_sector_harmonized_en_short_generalworkers.single_min = fct_lump_min(job_sector_harmonized_en_short_generalworkers.single, min = 12),
+  ) |> 
+  # slice_sample(n = 1000) |>  # Reduce the dataset while testing out the file, to reduce the computing time
+  droplevels()
+
+# Source my function for generating the GLM model data
+source(here("code", "Function_regression_data.R"))
+
+set.seed(2024)
+```
+
+
+```{r, results = "hide", message = FALSE, warning = FALSE, cache=TRUE}
+# Define the outcomes (and give them clean names)
+Outcomes <- enframe(c(
+  'Professional fulfillment (PFI)' = 'PFI_score.st_23'
+  , 'Demands' = 'demands_karasek.st_23'
+  , 'Autonomy' = 'autonomy_karasek.st_23'
+  , 'Social support' = 'social_support_karasek.st_23'
+  , 'Efforts-Rewards ratio' = 'ER_ratio.st_23'
+  , 'Overcommitment' = 'overcommitment_siegrist.st_23'
+))
+
+
+# Define the main variables (and give them clean names)
+Main_variables <- enframe(c(
+  'Occupational grouping' = 'occupation_type.single'                       
+  , 'Health subgroups' = 'HCW_subgroup.single'
+  , 'Essential worker subgroups' = 'key_subgroup.single'
+  , 'All subgroups' = 'occupation_type.single_alt'
+))
+
+# Define the covariates (no need for clean names)
+Covariates = c("age_cat","sex_en.inc", "education_rec_en.inc",
+               "swiss_national.inc",
+               "Pre_existing_MH_condition.inc", "Pre_existing_physical_condition.inc"
+)
+
+# Run the model for each outcome of interest using full adjustment set
+dat1 <- UEP_regression_data(
+  data = dat_scaled, 
+  outcomes = Outcomes$value, 
+  outcomes_clean_name = Outcomes$name,
+  outcomes_family = rep("gaussian", length(Outcomes$value)),  # MAKE SURE THIS MATCHES THE NUMBER OF OUTCOMES!
+  main_variable = Main_variables$value,
+  main_variable_clean_name = Main_variables$name,
+  covariates = Covariates
+)
+```
+# Current snapshot analyses {.tabset}  
+For the moment I used this very basic DAG to identify potential confounders used in the models (currently using regression models - these results only use the single timepoint of Santé-Travail 2023, for a current snapshot of differences between the occupation groups):
+```{r DAG, fig.cap = "DAG to identify potential confounders", out.width='85%'}
+knitr::include_graphics(here("data", "PFI_DAG_240516.jpeg"))
+```
+
+Any feedback on the DAG is welcome! (e.g. factors to add/remove, disagreement with the assumptions, etc.)
+
+## Forestplots {.tabset}  
+I've provided a few options of potential forestplots - single outcome only, where we can show the univariable and multivariable results together, or multiple outcomes where only the multivariable estimates are shown.  
+
+**Multivariable estimates for the exposure variables are adjusted for:**  
+Age group, sex, education, pre-existing mental conditions, pre-existing physical conditions, migration status, and living situation.
+
+**Multivariable estimates for the confounder variables are adjusted for:**  
+Age group, sex, education
+
+Continuous variables are **scaled and centered** for comparability in the same plot.
+
+### Multiple outcomes {.tabset}
+#### Exposure groups {.tabset}
+Only multivariable estimates are shown, using full adjustment set  
+
+##### Karasek measures  
+```{r multiple-occupation-karasek, fig.width = 12, fig.height = 10}
+a <- dat1 %>%
+  mutate(model_levels = case_when(label ~ model_levels,
+                                  .default = paste0("   ", model_levels))) |> 
+  filter(
+    outcome %in% c("Demands", "Autonomy", "Social support"),
+    variable %in% c("Occupational grouping", "Health subgroups", "Essential worker subgroups"
+    ),
+    model == "Multivariable"
+  ) |> 
+  # Give same N for social support so we can display N in a single column
+  mutate(n_obs2 = case_when(outcome != "Demands" ~ NA, .default = n_obs)) |> 
+  relocate(n_obs2, .after = n_obs) |> 
+  group_by(model_levels) |> fill(n_obs2, .direction = "down") |> ungroup()
+
+b <- a |> select(model_levels, outcome, full_estimate.multivariable) |> 
+  pivot_wider(names_from = outcome, values_from = full_estimate.multivariable)
+
+a <- left_join(a,b)
+
+num_outcomes <- length(unique(a$outcome))
+estimate_shapes <- c(fpDrawNormalCI, fpDrawCircleCI,  fpDrawDiamondCI, fpDrawNormalCI)
+estimate_colors <- c("#4271bd", "#990011FF", "darkgreen", "#ECA10A")
+
+# estimate_colors[1:num_outcomes]
+# estimate_shapes[1:num_outcomes]
+
+groupnames <- a %>%           # Crude way to ID the group labels and for later coloring
+  rowid_to_column() %>% 
+  filter(label) ; groupnames <- (groupnames$rowid)
+coeff_label = unique(a$family)
+
+if(coeff_label == "OR"){
+  min.est = 0.67
+  max.est = ceiling(max(a$estimate, na.rm = TRUE))+1} else {
+    min.est = plyr::round_any(min(a$estimate, na.rm = TRUE),0.25, floor)
+    # min.est = floor(min.est - (abs(min.est*0.1)))
+    max.est = plyr::round_any(max(a$estimate, na.rm = TRUE),0.25, ceiling)
+    # max.est = ceiling(max.est*1.1)
+  }
+
+if(coeff_label == "OR"){
+  my_ticks = c(log(0.67), log(1), log(1.5), sapply(2:max.est, log))
+  attr(my_ticks, "labels") <- c("0.67","1","1.5", paste0(2:max.est))} else {
+    # my_ticks = c(min.est, min.est+max.est, 0, max.est)
+    # attr(my_ticks, "labels") <- c(min.est, min.est+max.est, 0, max.est)
+    my_ticks = c(-0.75, -0.5, -0.25, 0, 0.25)
+    attr(my_ticks, "labels") <- as.character(my_ticks)
+  }
+
+
+karasek_forest <- a %>% 
+  group_by(outcome) |> 
+  forestplot(
+    labeltext = c(model_levels,
+                  n_obs2
+                  , `Demands`, `Autonomy`, `Social support`
+                  # n_perc.univariable, full_estimate.univariable, 
+                  # n_perc.multivariable, full_estimate.multivariable
+    ),
+    # align = "lc",
+    
+    # Set the estimate and the confidence intervals
+    mean = estimate,
+    lower = conf.low,
+    upper = conf.high,
+    
+    # Point and line aesthetics
+    fn.ci_norm = c(estimate_shapes[1:num_outcomes]),  # Set shapes of the symbols
+    lty.ci = c(1:num_outcomes),
+    
+    boxsize = 0.25,
+    ci.vertices = TRUE,
+    ci.vertices.height = 0.05,
+    line.margin = .07, # We need to add this to avoid crowding
+    
+    graphwidth = unit(2, "inches"),   # Set graphwidth
+    colgap = unit(3, "mm"), # Set gap between columns
+    
+    # clip = c(min.est, max.est), 
+    # Set alignment of the column values
+    align = "lrccc",
+    # hrzl_lines = list("7" = gpar(lty = 1)),
+    is.summary = label,
+    xlab = case_when(coeff_label == "Beta" ~ "Beta estimate (with 95% confidence interval)",
+                     .default = "Odds ratio (with 95% CI)"),
+    xticks = my_ticks,
+    zero = NA,
+    grid = structure(c(1e-20), gp=gpar(col = "black", lty=3, lwd = 1.2)), # Cant' set position to zero, but can set to a VERY small number
+    xlog = (coeff_label == "OR")     # Show x-axis on log scale
+    # Optional legend box formatting and position
+    , legend_args = fpLegend(
+      gp = gpar(col = "transparent", fill = "transparent"),
+      padding = unit(1, "mm"),
+      pos = list(x = 0.6, y = 0.985)
+    )
+  ) %>% 
+  # fp_add_lines("#999999") %>%
+  # fp_add_lines(h_3 = gpar(lty=2)) |>
+  fp_add_lines(h_2 = gpar(lty=1), h_6 = gpar(lty=2), h_13 = gpar(lty=2)
+               # , h_20 = gpar(lty=2)
+  ) |>
+  fp_add_header(
+    model_levels = c(""), n_obs2 = "N" %>% fp_align_center(), 
+    `Demands` = "Demands" %>% fp_align_center(), 
+    `Autonomy` = "Autonomy" %>% fp_align_center(), 
+    `Social support` = "Social support" %>% fp_align_center()
+  ) %>%
+  fp_set_zebra_style("gray85", ignore_subheaders = TRUE) %>% 
+  fp_decorate_graph(graph.pos = 3) %>% 
+  fp_set_style(box = c(estimate_colors[1:num_outcomes]),
+               line = c(estimate_colors[1:num_outcomes]),
+               # Font settings
+               txt_gp = fpTxtGp(summary = gpar(fontface = "bold", cex = 1),
+                                label = gpar(cex = 0.9),
+                                ticks = gpar(cex = 0.7),
+                                xlab = gpar(cex = 1),
+                                legend = gpar(cex = 0.83)));karasek_forest
+```
+
+##### Siegrist measures (ERI)  
+```{r multiple-occupation-siegrist, fig.width = 12, fig.height = 10.5}
+a <- dat1 %>%
+  mutate(model_levels = case_when(label ~ model_levels,
+                                  .default = paste0("   ", model_levels))) |> 
+  filter(
+    outcome %in% c("Professional fulfillment (PFI)", "Efforts-Rewards ratio", "Overcommitment"),
+    variable %in% c("Occupational grouping", "Health subgroups", "Essential worker subgroups"
+    ),
+    model == "Multivariable"
+  ) |> 
+  # Give same N for social support so we can display N in a single column
+  mutate(n_obs2 = case_when(outcome != "Professional fulfillment (PFI)" ~ NA, .default = n_obs)) |> 
+  relocate(n_obs2, .after = n_obs) |> 
+  group_by(model_levels) |> fill(n_obs2, .direction = "down") |> ungroup()
+
+b <- a |> select(model_levels, outcome, full_estimate.multivariable) |> 
+  pivot_wider(names_from = outcome, values_from = full_estimate.multivariable)
+
+a <- left_join(a,b)
+
+num_outcomes <- length(unique(a$outcome))
+estimate_shapes <- c(fpDrawNormalCI, fpDrawCircleCI,  fpDrawDiamondCI, fpDrawNormalCI)
+estimate_colors <- c("#4271bd", "#990011FF", "darkgreen", "#ECA10A")
+
+# estimate_colors[1:num_outcomes]
+# estimate_shapes[1:num_outcomes]
+
+groupnames <- a %>%           # Crude way to ID the group labels and for later coloring
+  rowid_to_column() %>% 
+  filter(label) ; groupnames <- (groupnames$rowid)
+coeff_label = unique(a$family)
+
+if(coeff_label == "OR"){
+  min.est = 0.67
+  max.est = ceiling(max(a$estimate, na.rm = TRUE))+1} else {
+    min.est = plyr::round_any(min(a$estimate, na.rm = TRUE),0.25, floor)
+    # min.est = floor(min.est - (abs(min.est*0.1)))
+    max.est = plyr::round_any(max(a$estimate, na.rm = TRUE),0.25, ceiling)
+    # max.est = ceiling(max.est*1.1)
+  }
+
+if(coeff_label == "OR"){
+  my_ticks = c(log(0.67), log(1), log(1.5), sapply(2:max.est, log))
+  attr(my_ticks, "labels") <- c("0.67","1","1.5", paste0(2:max.est))} else {
+    my_ticks = c(-0.5, -0.25, 0, 0.25)
+    attr(my_ticks, "labels") <- as.character(my_ticks)
+  }
+
+
+siegrist_forest <- a %>% 
+  group_by(outcome) |> 
+  forestplot(
+    labeltext = c(model_levels,
+                  n_obs2
+                  , `Professional fulfillment (PFI)`, `Efforts-Rewards ratio`, `Overcommitment`
+                  # n_perc.univariable, full_estimate.univariable, 
+                  # n_perc.multivariable, full_estimate.multivariable
+    ),
+    # align = "lc",
+    
+    # Set the estimate and the confidence intervals
+    mean = estimate,
+    lower = conf.low,
+    upper = conf.high,
+    
+    # Point and line aesthetics
+    fn.ci_norm = c(estimate_shapes[1:num_outcomes]),  # Set shapes of the symbols
+    lty.ci = c(1:num_outcomes),
+    
+    boxsize = 0.25,
+    ci.vertices = TRUE,
+    ci.vertices.height = 0.05,
+    line.margin = .07, # We need to add this to avoid crowding
+    graphwidth = unit(2.5, "inches"),   # Set graphwidth
+    colgap = unit(3, "mm"), # Set gap between columns
+    # clip = c(min.est, max.est), 
+    # Set alignment of the column values
+    align = "lrccc",
+    # hrzl_lines = list("7" = gpar(lty = 1)),
+    is.summary = label,
+    xlab = case_when(coeff_label == "Beta" ~ "Beta estimate (with 95% confidence interval)",
+                     .default = "Odds ratio (with 95% CI)"),
+    xticks = my_ticks,
+    xlog = (coeff_label == "OR")     # Show x-axis on log scale
+    , zero = NA,
+    grid = structure(c(1e-20), gp=gpar(col = "black", lty=3, lwd = 1.2)) # Cant' set position to zero, but can set to a VERY small number
+    # Optional legend box formatting and position
+    , legend_args = fpLegend(
+      gp = gpar(col = "transparent", fill = "transparent"),
+      padding = unit(0, "mm")
+      ,pos = list(x = 0.65, y = 0.98)
+    )
+  ) %>% 
+  # fp_add_lines("#999999") %>%
+  # fp_add_lines(h_3 = gpar(lty=2)) |>
+  fp_add_lines(h_2 = gpar(lty=1), h_6 = gpar(lty=2), h_13 = gpar(lty=2)
+               # , h_21 = gpar(lty=2)
+  ) |>
+  fp_add_header(
+    model_levels = "", n_obs2 = "N" %>% fp_align_center(), 
+    `Professional fulfillment (PFI)` = "PFI" %>% fp_align_center(),
+    `Efforts-Rewards ratio` = "E-R ratio" %>% fp_align_center(),
+    `Overcommitment` = "Overcommitment" %>% fp_align_center()
+  ) %>%
+  fp_set_zebra_style("gray85", ignore_subheaders = TRUE) %>% 
+  fp_decorate_graph(graph.pos = 3) %>% 
+  fp_set_style(box = c(estimate_colors[1:num_outcomes]),
+               line = c(estimate_colors[1:num_outcomes]),
+               # Font settings
+               txt_gp = fpTxtGp(summary = gpar(fontface = "bold", cex = 1),
+                                label = gpar(cex = 0.9),
+                                ticks = gpar(cex = 0.7),
+                                xlab = gpar(cex = 1),
+                                legend = gpar(cex=0.83)));siegrist_forest
+```
+
+## Collinearity/Internal consistency {.tabset}
+
+### Cramer's V  
+Measure strength of association between categorical predictors (<0.5 indicates only weak/moderate association)
+```{r cramerV}
+
+covariates = c("age_cat","sex_en.inc", "education_rec_en.inc", 
+               "Pre_existing_MH_condition.inc", "Pre_existing_physical_condition.inc",
+               "swiss_national.inc"
+               # , "migration_status.inc", "living_situation_rec.inc"
+)
+
+
+# Throw in some others just to check if they follow the expected pattern
+covariates <- c(covariates
+                # #, "Occupation_label_1"
+                # , "mental_state.inc"
+                # , "health_general.inc"
+                # , "health.st_23"
+)
+
+# Create an empty dataframe of the pairwise values to be calculated
+cramer <- tibble(variable = vctrs::vec_rep(covariates, length(covariates)),
+                 match = vctrs::vec_rep_each(covariates, length(covariates)),
+                 cramer = NA)
+
+# Run a loop to calculate Cramer's V between each variable pair, and populate the cramer dataframe
+for (i in 1:nrow(cramer)) {
+  if(cramer[i,1] == cramer[i,2]){
+    cramer[i,3] <- 1} else {
+      a <- dat_scaled %>% 
+        select(all_of(
+          c(as.character(cramer[i,1]), 
+            as.character(cramer[i,2]))
+        )) %>% table()
+      cramer[i,3] <- CramerV(a)}
+}
+
+# Make wide to compute corrplots
+cramer_wide <- cramer %>% 
+  pivot_wider(
+    names_from = match,
+    values_from = cramer
+  )
+
+# Convert to a matrix format
+cramer_wide <- as.data.frame(cramer_wide)
+rownames(cramer_wide) <- cramer_wide[,1]
+cramer_wide <- cramer_wide %>% select(-variable)
+
+# Generate the correlation matrix
+ggcorrplot(
+  cramer_wide,
+  hc.order = TRUE,
+  type = "lower",
+  lab = TRUE
+)
+```
+
+### Multicollinearity  
+GVIF1/(2×df) < 2 indicates weak/moderate collinearity
+```{r multicollinearity}
+# VIF (GVIF) ####
+outcomes <- c("PFI_score.st_23")
+# Set the family that will be used in the glm models
+outcomes_family <- c("gaussian")
+
+# source(here("code", "Regression_covariates.R"))
+
+r_model <- c("occupation_type.single", covariates) %>%
+  str_c(collapse = "+") %>% # combine variables separated by a plus
+  ## combine the variables with outcome in formula style
+  str_c(outcomes[1]," ~ ", .) %>%
+  glm(family = outcomes_family[1], data = dat_scaled)
+
+car::vif(r_model) ## Interpret GVIF^(1/(2*Df)) as this takes into account the degrees of freedom
+```
+
+### Cronbach's alpha
+
+#### PFI
+```{r cronbach-PFI}
+dat %>% select(starts_with("points_pfi_scale")) %>% 
+  psych::alpha(cumulative = FALSE)#$total # = 0.94 with no transformation, and 0.93 with basically every other transformation I've tried for normalizing each item distribution
+```
+
+#### Karasek - demands
+```{r cronbach-demands}
+dat %>% select(starts_with("points_karasek_demand")) %>% 
+  psych::alpha(cumulative = TRUE)#$total # = 0.94 with no transformation, and 0.93 with basically every other transformation I've tried for normalizing each item distribution
+```
+
+#### Karasek - autonomy
+```{r cronbach-autonomy}
+dat %>% select(starts_with("points_karasek_autonomy")) %>% 
+  psych::alpha(cumulative = TRUE)#$total # = 0.94 with no transformation, and 0.93 with basically every other transformation I've tried for normalizing each item distribution
+```
+
+#### Karasek - social support
+```{r cronbach-social-support}
+dat %>% select(starts_with("points_karasek_support")) %>% 
+  psych::alpha(cumulative = TRUE)#$total # = 0.94 with no transformation, and 0.93 with basically every other transformation I've tried for normalizing each item distribution
+```
+
+#### Siegrist - effort
+```{r cronbach-effort}
+dat %>% select(starts_with("points_eri_effort")) %>% 
+  psych::alpha(cumulative = TRUE)#$total # = 0.94 with no transformation, and 0.93 with basically every other transformation I've tried for normalizing each item distribution
+```
+
+#### Siegrist - rewards
+```{r cronbach-rewards}
+dat %>% select(starts_with("points_eri_reward")) %>% 
+  psych::alpha(cumulative = TRUE)#$total # = 0.94 with no transformation, and 0.93 with basically every other transformation I've tried for normalizing each item distribution
+```
+
+#### Siegrist - overcommitment
+```{r cronbach-overcommitment}
+dat %>% select(starts_with("points_eri_overinvestment")) %>% 
+  psych::alpha(cumulative = TRUE)#$total # = 0.94 with no transformation, and 0.93 with basically every other transformation I've tried for normalizing each item distribution
+```
+
+
+## PFI mediation analysis {.tabset}
+
+```{r mediation-setup}
+set.seed(2024) # set seed for reproducibility of estimates
+
+dat_mediation <- dat_scaled |> 
+  # filter(occupation_type.single != "Other essential worker") |> 
+  # mutate(treat = case_when(occupation_type.single == "Healthcare worker" ~ 1,
+  #                          occupation_type.single == "General workforce" ~ 0,
+  #                          .default = NA))
+  mutate(
+    treat = occupation_type.single)
+
+table_function <- function(mod.0, mod.interaction, mediator, int_test){
+  table_out <- tibble(
+    # Without interaction
+    average_effect = c("Mediation", "Direct", "Total", "Proportion mediated"), 
+    no_interaction = c(mod.0$d0, mod.0$z0, mod.0$tau.coef, mod.0$n0),
+    no_interaction_ci_low = c(mod.0$d0.ci[[1]], mod.0$z0.ci[[1]], mod.0$tau.ci[[1]], mod.0$n0.ci[[1]]),  
+    no_interaction_ci_high = c(mod.0$d0.ci[[2]], mod.0$z0.ci[[2]], mod.0$tau.ci[[2]], mod.0$n0.ci[[2]]),
+    no_interaction_p = c(mod.0$d0.p, mod.0$z0.p, mod.0$tau.coef, mod.0$n0.p),
+    # With interaction
+    under_control = c(mod.interaction$d0, mod.interaction$z0, mod.interaction$tau.coef, mod.interaction$n0),
+    under_control_ci_low = c(mod.interaction$d0.ci[[1]], mod.interaction$z0.ci[[1]], mod.interaction$tau.ci[[1]], mod.interaction$n0.ci[[1]]),
+    under_control_ci_high = c(mod.interaction$d0.ci[[2]], mod.interaction$z0.ci[[2]], mod.interaction$tau.ci[[2]], mod.interaction$n0.ci[[2]]),
+    under_control_p = c(mod.interaction$d0.p, mod.interaction$z0.p, mod.interaction$tau.p, mod.interaction$n0.p),
+    under_treatment = c(mod.interaction$d1, mod.interaction$z1, mod.interaction$tau.coef, mod.interaction$n1),
+    under_treatment_ci_low = c(mod.interaction$d1.ci[[1]], mod.interaction$z1.ci[[1]], mod.interaction$tau.ci[[1]], mod.interaction$n1.ci[[1]]),
+    under_treatment_ci_high = c(mod.interaction$d1.ci[[2]], mod.interaction$z1.ci[[2]], mod.interaction$tau.ci[[2]], mod.interaction$n1.ci[[2]]),
+    under_treatment_p = c(mod.interaction$d1.p, mod.interaction$z1.p, mod.interaction$tau.p, mod.interaction$n1.p)
+  ) |> 
+    mutate(
+      no_interaction_full = paste0(labelmake(no_interaction), " [", labelmake(no_interaction_ci_low), ", ", labelmake(no_interaction_ci_high), "]"),
+      under_control_full = paste0(labelmake(under_control), " [", labelmake(under_control_ci_low), ", ", labelmake(under_control_ci_high), "]"),
+      under_treatment_full = paste0(labelmake(under_treatment), " [", labelmake(under_treatment_ci_low), ", ", labelmake(under_treatment_ci_high), "]")
+    ) |> 
+    add_row(average_effect = "Avg. proportion mediated") |> 
+    mutate(
+      mediator = mediator,
+      int_p = int_test$p.value,
+      under_control_full = case_when(average_effect == "Avg. proportion mediated" ~ paste0(labelmake(mod.interaction$n.avg), " [", labelmake(mod.interaction$n.avg.ci[[1]]), ", ", labelmake(mod.interaction$n.avg.ci[[2]]), "]"),
+                                     .default = under_control_full),
+      no_interaction_full = case_when(average_effect == "Avg. proportion mediated" ~ "", .default = no_interaction_full)
+    ) |> 
+    mutate(
+      under_control_full = case_when(under_control_full == "" ~ "",
+                                     average_effect %in% c("Avg. proportion mediated", "Proportion mediated") & !str_starts(under_control_full, "\\.") ~ "-",
+                                     .default = under_control_full),
+      no_interaction_full = case_when(no_interaction_full == "" ~ "",
+                                      average_effect %in% c("Avg. proportion mediated", "Proportion mediated") & !str_starts(no_interaction_full, "\\.") ~ "-",
+                                      .default = no_interaction_full),
+      under_treatment_full = case_when(under_treatment_full == "" ~ "",
+                                       average_effect %in% c("Avg. proportion mediated", "Proportion mediated") & !str_starts(under_treatment_full, "\\.") ~ "-",
+                                       .default = under_treatment_full)
+    )
+}
+
+output_table <- function(df, comparison){
+  int_p = unique(df$int_p)
+  df |> select(average_effect, contains("_full")) |> myflextable() |>  
+    merge_at(i = 3, j = 3:4) |> 
+    merge_at(i = 5, j = 3:4) |> 
+    labelizor(part = "header", labels = c(average_effect = "Average effect",no_interaction_full = "Without\ninteraction", 
+                                          under_control_full = "Within\nreference", under_treatment_full = "Within\ncomparison")) |> 
+    add_header_row(values = c("","","With interaction", "With interaction"), top = TRUE, ) |>
+    merge_h(part = "header") |> 
+    width(j = 1, width = 4.3, unit = "cm") |> 
+    width(j = 2:4, width = 3.2, unit = "cm") |> 
+    theme_zebra(odd_header = "transparent") |> 
+    border_remove() |> 
+    hline_bottom() |> hline_top() |> 
+    hline(part = "header", j = 3:4) |> 
+    align(j = 2:4, align = "center", part = "all") |>
+    align(j = 1, align = "center", part = "header") |> 
+    add_footer_lines(paste0("Note: Each cell shows the point estimate and its corresponding 95% confidence interval. Results are from models without and with an exposure-mediatior interaction term, and the groups of comparison are between the general workforce (reference group) and ", comparison,".")) |> 
+    footnote(i = 1, j = 3, value = as_paragraph("Test of interaction, p-value = ", sprintf("%.3f", int_p)),
+             ref_symbols = c("a"), part = "header") |> 
+    fontsize(size = 10, part = "all")
+}
+
+```
+
+### Background  
+
+Four assumptions (see https://www.publichealth.columbia.edu/research/population-health-methods/causal-mediation):
+```{r mediation-assumptions, out.width='65%'}
+knitr::include_graphics(here("data", "mediation_assumptions.png"))
+```
+
+In our study, we're looking at the **natural effects**.
+
+**Two additional assumptions** (Imai, Keele, et Tingley (2010). "A General Approach to Causal Mediation Analysis"):  
+
+-  **"Sequential ignorability"**, named because two ignorability assumptions are made sequentially:
+-  "Given the observed pretreatment confounders, the treatment assignment is assumed to be ignorable, that is, statistically independent of potential outcomes and potential mediators. In the JOBS II study, this first ignorability assumption is satisfied because workers were randomly assigned to the treatment and control groups. In contrast, this part of the assumption is not guaranteed to hold in observational studies in which subjects may self-select into the treatment group. In such situations, a common strategy of empirical researchers is to collect as many pretreatment confounders as possible so that the ignorability of treatment assignment is more credible once the observed differences in these confounders between the treatment and control groups are appropriately adjusted."  
+-  "The mediator is ignorable given the observed treatment and pretreatment confounders. That is, the second part of the sequential ignorability assumption is made conditional on the observed value of the ignorable treatment and the observed pretreatment confounders. Unlike the ignorability of treatment assignment, however, the ignorability of the mediator may not hold even in randomized experiments. In the JOBS II study, for example, the randomization of the treatment assignment does not justify this second ignorability assumption because the posttreatment level of workers’ job search self-efficacy is not randomly assigned by researchers. In other words, the ignorability of the mediator implies that among those workers who share the same treatment status and the same pretreatment characteristics, the mediator can be regarded as if it were randomized.  This is a strong assumption and must be made with care. It is always possible that there might be unobserved variables that confound the relationship between the outcome and the mediator variables even after conditioning on the observed treatment status and the observed covariates. Moreover, the **conditioning set of covariates must be pretreatment variables**. Indeed, without an additional assumption, we cannot condition on the posttreatment confounders even if such variables are observed by researchers (e.g., Avin, Shpitser, & Pearl, 2005). This means that similar to the ignorability of treatment assignment in observational studies, it is difficult to know for certain whether the ignorability of the mediator holds even after researchers collect as many pretreatment confounders as possible. Such an assumption is often referred to as nonrefutable because it cannot be directly tested from the observed data (Manski, 2007). Thus, **we develop a set of sensitivity analyses that will allow researchers to quantify the degree to which their empirical findings are robust to a potential violation of the sequential ignorability assumption**. Sensitivity analyses are an appropriate approach to nonrefutable assumptions because they *allow the researcher to probe whether a substantive conclusion is robust to potential violations of the assumption.*"
+-  **No interaction between exposure and mediator**
+
+
+**See also** https://davidakenny.net/cm/mediate.htm:  
+
+"Sometimes the indirect and direct effects have different signs, which is called **inconsistent mediation**. In some sense, the X variable acts like a variable that suppresses the correlation between X and Y."
+
+"Another measure of mediation is the proportion of the effect that is mediated, or the indirect effect divided by the total effect or ab/c or equivalently 1 - c'/c. Such a measure though theoretically informative is very unstable and should not be computed if c is small (MacKinnon et al., 1995). Note that this measure can be greater than one or even negative.  **I would advise only computing this measure if standardized c is at least ±0.2**. The measure can be informative, especially when c' is not statistically significant.  For instance, Kenny et al. (1998) find that c' is not statistically significant but only 56% of the total effect is explained."
+
+"Four key causal assumptions of mediational analyses:  
+
+-  No X-M Interaction:  The effect of M on Y or b does not vary across levels of X.  
+-  Causal Direction:  The variable M causes Y, by Y does not cause M.  
+-  Perfect Reliability in M:  The reliability of M is perfect.  
+-  No Confounding: There is no variable that causes M and Y."  
+
+"Two papers have carefully examined the extent to which researchers consider those assumptions. The first is a review by Gelfand et al. (2009) who surveyed mediation studies published in 2002.  They took a random sample of 50 of those studies and found the following:  Only 1 of the 50 papers mentioned unreliability of M as an issue and only 7 of the 50 mentioned confounding.  Most of the papers used cross-sectional data (54%), which likely violated assumptions of causal precedence.  The second is a review by Rijnhart et al. (2022) who examined 175 mediation papers published from 2005 to 2009.  Only 10% of these papers reported testing for X-M interaction."
+
+Earlier, the assumptions necessary for mediation were stated using structural equation modeling terms.  **Within the Causal Inference approach, the following assumptions about confounding are made:**  
+
+-  Condition 1: No unmeasured confounding of the X-Y relationship; that is, any variable that causes both X and Y must be included in the model.  
+-  Condition 2: No unmeasured confounding of the M-Y relationship.  
+-  Condition 3: No unmeasured confounding of the X-M relationship.  
+-  Condition 4: Variable X must not cause any known confounder of the M-Y relationship.  
+
+The Causal Inference approach emphasizes sensitivity analysis: These are analyses that ask questions such as, “What would happen to the results if there was a M-Y confounder that had both a moderate effect on M and Y?” As is discussed below, a sensitivity analysis should be an important part of any mediation analysis.
+
+Because effects involve variables not necessarily at the interval level and because interactions are allowed, the direct, indirect, and total effects need to be redefined.  These effects are defined using counterfactuals, not structural equations. Recall from above that for person i, it can be asked: What would person i's score on Y be if person i had scored 0 on X? That value, called the potential outcome, is denoted Yi(0).The population average of these potential outcomes across persons is denoted as E[Y(0)]. The definition of the effect of X on Y or total effect as
+E[Y(1)] - E[Y(0)]  
+
+This looks strange, but it is useful to remember effects can be viewed as a difference between what the outcome would be when the causal variable differs by one unit. Consider path c in mediation.  This difference can be viewed as the difference between what it would be expected that Y would equal when X was 1 and equal to 0, the difference between the two potential outcomes, E[Y(1)] - E[Y(0)].  
+
+In the Causal Inference approach, there is the Controlled Direct Effect or CDE for the mediator equal to a particular value, denoted as M (not to be confused with the variable M):
+CDE(M) = E[Y(1,M)] - E[Y(0,M)]  
+
+where M is a particular value of the mediator.  Note that it is E[Y(1,M)] and not E[Y(1|M)], the expected value of Y given that X equals 1 "controlling for M."  If X and M interact, the CDE(M) changes for different values of M.  To obtain a single measure of the direct effect, several different suggestions have been made.  Although the suggestions are different, all of these measures are called "Natural." One idea is to determine the Natural Direct Effect or NDE as follows
+NDE = E[Y(1,M0)] - E[Y(0,M0)]  
+
+where M0 is the value of M for which X = 0, which is the expected value on the mediator if X were to equal 0 (i.e., the potential outcome of M given X = 0). Thus, within this approach, there needs to be a meaningful "baseline" value for X which becomes its zero value.  For instance, if X is the variable experimental group versus control group, then the control group would have a score of 0.  However, if X is level of self-esteem, it might be more arbitrary to define the zero value.  The parallel Natural Indirect Effect or NIE is defined as
+NIE = E[Y(1,M1)] - E[Y(1,M0)]  
+
+where M1 is M(1) or the potential outcome for M when X equals 1.  The Total Effect becomes the sum of the two:
+TE = NIE + NDE = E[Y(1,M1)] - E[Y(1,M0)] = E[Y(1)] - E[Y(0)]  
+
+**Offsetting Confounders**  
+In the case below, there are two confounders, C1 and C2.  But note that is this case, there two effects offset each other, one with a standardized effect of .24 and with -.24. Note that if C1 was "controlled," the M to Y effect would be negatively biased, and if C2 was controlled, it would be positively biased.  In this case, controlling for a confounder, biases the estimate.  For this and other reasons, it is not necessary to control for all confounders. What the figure illustrates is that although C1 and C2 are confounders, there is no need to control for them in this case. For a detailed explanation of the rules for controlling for confounders, consult Pearl (2014).  
+```{r mediation-offsettingC, out.width='65%'}
+knitr::include_graphics(here("data", "offsetting_confounder.jpg"))
+```
+
+**Post-treatment Confounders: G Estimation**  
+As was discussed in the Causal Inference section, one assumption is that there does not exist a post-treatment confounder C of the M-Y relationship that is caused by X (Condition 4). Note below that C is caused by X, and causes M and Y. Such a variable has been called a post-treatment or intermediate confounder. The red path indicates a path from X to the confounder.
+```{r mediation-ptC, out.width='65%'}
+knitr::include_graphics(here("data", "posttreatment_confounder.png"))
+```  
+
+Note that the "confounder" C could alternatively be interpreted as a second mediator. If it was treated as such, there would be three indirect effects: one through C (X → C → Y), one through M (X → M → Y), and one through C and M (X → C → M → Y). The model is identified. However, if for some reason, researchers may not want to treat C as a mediator, but as a confounder.  If so, the indirect effect of X on Y via C (X → C → Y) would be treated as part of the direct effect of X on Y and the indirect effect of X on Y via C and M (X → C → M → Y) would be treated as part of the indirect effect of M.  The model is still identified, but It is my understanding that this formulation makes it impossible to define the natural indirect effect of X on Y via only M using potential outcomes (see VanderWeele, 2015), which is why the Condition IV is needed. If instead, C is treated as a second mediator, there is no problem.
+
+### Multicollinearity
+In case multiple mediators are selected for mediation analyses, check for multicollinearity (I've seen at least one paper that does this, but I'm not sure it's actually needed if we're referring to our DAG, maybe it's only important if we include two of these in the same model).
+```{r mediation-multicol}
+res_med <- cor(dat_scaled |> select(demands_karasek.st_23, autonomy_karasek.st_23, social_support_karasek.st_23,
+                                    efforts_siegrist.st_23, rewards_siegrist.st_23, ER_ratio.st_23, overcommitment_siegrist.st_23,
+                                    PFI_score.st_23), 
+               method = "spearman", use = "complete.obs")
+
+ggcorrplot(
+  res_med,
+  hc.order = TRUE,
+  type = "lower",
+  lab = TRUE
+)
+```
+
+### Autonomy  
+#### Linear relationship between outcome and mediators
+```{r mediation-autonomy-linear}
+dat_mediation |> 
+  ggplot(aes(x = autonomy_karasek.st_23, y = PFI_score.st_23))+
+  geom_point()+geom_smooth()
+```
+
+#### Simple mediation model (no interaction)
+```{r mediation-autonomy}
+# Three step Mediation ####
+# It seems that this is generally not the best strategy these days - see method using `mediate` package in next section.  But, I think it's still good to run steps 1 and 2 to confirm that the independent variable is a significant predictor of both the outcome and of the proposed mediator
+
+# # Step 1 Regress the dependent variable on the independent variable to confirm that the independent variable is a significant predictor of the dependent variable.
+# m_yx <- glm(PFI_score.st_23 ~ treat + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + 
+#               Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc, 
+#             data = dat_mediation, family = "gaussian");summary(m_yx)
+# 
+# # Step 2 Regress the mediator on the independent variable to confirm that the independent variable is a significant predictor of the mediator. If the mediator is not associated with the independent variable, then it couldn’t possibly mediate anything.
+# m_mx <- glm(autonomy_karasek.st_23 ~ treat + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + 
+#               Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc, 
+#             data = dat_mediation, family = "gaussian");summary(m_mx)
+# 
+# # Step 3 Regress the dependent variable on both the mediator and independent variable to confirm that a) the mediator is a significant predictor of the dependent variable, and b) the strength of the coefficient of the previously significant independent variable in Step #1 is now greatly reduced, if not rendered nonsignificant.
+# m_yxm <- glm(PFI_score.st_23 ~ treat + autonomy_karasek.st_23 + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+#                Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc, 
+#              data = dat_mediation, family = "gaussian");summary(m_yxm)
+
+# In order for either full or partial mediation to be established, the reduction in variance explained by the independent variable must be significant as determined by one of several tests, such as the Sobel test
+
+
+# Mediation using the `mediation` package
+#  No interaction ####
+# Model with mediator as the outcome: "For binary response models, the 'mediator' must be a numeric variable with values 0 or 1 as opposed to a factor. Quasi-likelihood-based inferences are not allowed for the mediator model because the functional form must be exactly specified for the estimation algorithm to work. The 'binomial' family can only be used for binary response mediators and cannot be used for multiple-trial responses"
+med.fit <- lm(autonomy_karasek.st_23 ~ treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              , data = dat_mediation)
+
+# Model with primary outcome and including mediator
+out.fit <- lm(PFI_score.st_23 ~ autonomy_karasek.st_23 + treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc
+              + swiss_national.inc 
+              , data = dat_mediation
+              # , family = binomial("probit")
+)
+
+# Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects)
+med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "autonomy_karasek.st_23",
+                   control.value = "General workforce", treat.value = "Healthcare worker",
+                   boot = TRUE,
+                   robustSE = TRUE, # ignored when boot = TRUE
+                   sims = 1000);summary(med.out)
+
+med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "autonomy_karasek.st_23",
+                       control.value = "General workforce", treat.value = "Other essential worker",
+                       boot = TRUE,
+                       robustSE = TRUE, # ignored when boot = TRUE
+                       sims = 1000);summary(med.out_key)
+```
+
+#### Sensitivity analysis for assumption of sequential ignorability  
+
+"We first choose as the sensitivity parameter the correlation ρ between the residuals of the mediator and outcome regressions (Imai et al. 2010a,c). If there exist unobserved pre-treatment confounders which affect both the mediator and the outcome, we expect that the sequential ignorability assumption is violated and ρ is no longer zero. The sensitivity analysis is conducted by varying the value of ρ and examining how the estimated ACME changes."
+
+"An alternative but mathematically equivalent way to conduct sensitivity is in terms of the product of R2 (or coefficients of determination) statistics from the mediator and outcome models. Discussed in more detail elsewhere (Imai et al. 2010c, 2011, 2010a), the first row captures the point at which the ACME is 0 as a function of the proportions of residual variance in the mediator and outcome explained by the hypothesized unobserved confounder. The second line uses the total variance instead of residual variance. We use R∗2 for residual variance and R~2 for total variance. For example, when the product of the original variance explained by the omitted confounding is .049 the point estimate for ACME would be 0."  
+
+"When using the R2 statistic version of sensitivity analysis the user must specify whether the hypothesized confounder affects the mediator and outcome variables in the same direction or in different directions."
+```{r mediation-autonomy-plot, fig.width = 9, fig.height = 3}
+## Sensitivity analysis for assumption of sequential ignorability ####
+# The sensitivity analysis is only implemented for the following three model combinations: 
+# 1) linear mediator and outcome models (both of class 'lm'), 
+# 2) binary probit mediator (fitted via 'glm' with family "binomial" and link "probit") and linear outcome models, 
+# 3) and linear mediator and binary probit outcome models. 
+# In addition, the binary outcome model cannot include a treatment-mediator interaction term.
+sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000)
+summary(sens.out)
+par(mfrow = c(1,3))
+plot(sens.out, sens.par = "rho", main = "Autonomy", ylim = c(-0.2, 0.2))
+plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "positive", main = "Residual variance")
+plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "positive", main = "Total variance")
+
+plot(sens.out, sens.par = "rho", main = "Autonomy", ylim = c(-0.2, 0.2))
+rho_autonomy <- recordPlot()
+```
+Rho at which ACME = 0 is 0.5, which is reasonably high and indicates that our estimates for the mediating role of autonomy are fairly robust to the presence of unobserved pre-treatment confounders.
+
+#### Mediator-treatment interaction
+
+**Estimates:**
+```{r mediation-autonomy-interaction}
+# Alternative outcome model with treatment-mediator interaction
+out_int.fit <- lm(PFI_score.st_23 ~ autonomy_karasek.st_23*treat 
+                  + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc
+                  + swiss_national.inc
+                  # + migration_status.inc + living_situation_rec.inc
+                  , 
+                  data = dat_mediation)
+```
+
+**Test: General workforce (control) vs Healthcare workers (treatment)**
+```{r mediation-autonomy-interaction-test-gen-health}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_health <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "autonomy_karasek.st_23", 
+  control.value = "General workforce", treat.value = "Healthcare worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_health)
+int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction
+```
+
+**Test: general workforce (control) vs Other essential workers (treatment)**
+```{r mediation-autonomy-interaction-test-gen-key}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_key <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "autonomy_karasek.st_23", 
+  control.value = "General workforce", treat.value = "Other essential worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_key)
+int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction
+```
+
+<!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r mediation-autonomy-interaction-test-key-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_key_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "autonomy_karasek.st_23",  -->
+<!--   control.value = "Other essential worker", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_key_health) -->
+<!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+
+#### Table output  
+
+**What is the best way to display / interpret these results?**  
+
+Below is an example using a display similar to that used in Imai, Keele, et Tingley, (2010), «A General Approach to Causal Mediation Analysis.»:
+
+I'm showing the estimates without and with interaction, including the result of the significance test for interaction. But, these are only showing for two levels of our exposure (control = General workforce, treatment = Healthcare workers):
+```{r mediation-autonomy-interaction-table}
+autonomy_table <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Autonomy", int_test = int_test_gen_health) |> 
+  mutate(comparison_g = "Healthcare workers")
+autonomy_table_output_health <- output_table(autonomy_table, "Healthcare workers")
+save_as_docx("Autonomy" = autonomy_table_output_health, 
+             path = here("output", "publication figures", paste0(format(Sys.time(),"%Y-%m-%d-%H%M_"), 
+                                                                 "Mediation_autonomy_healthcare.docx")))
+autonomy_table_output_health
+```
+
+Test of interaction is **significant** when comparing the general workforce to Healthcare workers but not when comparing the general workforce to key workers:
+
+```{r mediation-autonomy-interaction-key-table}
+autonomy_table_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Autonomy", int_test = int_test_gen_key)|> 
+  mutate(comparison_g = "other essential workers")
+output_table(autonomy_table_key, "other essential workers")
+```
+
+"The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)."
+
+"In mediation analysis, whatever the estimation procedure, it is totally fine to obtain direct and indirect effects with opposite directions. This situation is sometimes referred to as "inconsistent mediation", as it produces one between direct or indirect effect to be larger than the total effect (see here for further details: MacKinnon, David P., Amanda J. Fairchild, and Matthew S. Fritz. "Mediation analysis." Annu. Rev. Psychol. 58 (2007): 593-614.).  The interpretation of your output is that the negative effect of the exposure on the outcome is completely due to the indirect mechanism operating through your mediator. Direct pathways (those not including the mediator) are in the opposite direction, but these are not strong enough to cancel out the negative effect of indirect pathways. In such case, the common proportion measures (for example the proportion mediated) are not meaningful."
+
+**See also** https://www.publichealth.columbia.edu/research/population-health-methods/causal-mediation :
+"...these methods allow for effect decomposition in the presence of X-M interaction by defining direct and indirect effects (controlled or natural) from a potential outcomes (PO) framework and developing estimations of these quantities that are not model specific."
+
+"...in the presence of interaction, only one estimate is obtained for the natural direct effect (either pure or total) and one estimate for the natural indirect effect (either pure or total) and these estimates sum to the total effect. Whether you decide to estimate the pure or total natural direct/indirect effect depends on to which estimate you want to attribute the X-M interaction. That is, you can either estimate the pure indirect effect and the total direct effect, or the total indirect effect and the pure direct effect; depending on the chosen combination, the X-M interaction is either absorbed into the direct or indirect effect, respectively."  
+**Natural direct effect:**  
+Pure: Y1M0-Y0M0  
+Total: Y1M1-Y0M1  
+
+**Natural indirect effect:**  
+Pure: Y0M1-Y0M0  
+Total: Y1M1-Y1M0
+
+### Work social support  
+#### Linear relationship between outcome and mediators
+```{r mediation-social-support-linear}
+dat_mediation |> 
+  ggplot(aes(x = social_support_karasek.st_23, y = PFI_score.st_23))+
+  geom_point()+geom_smooth()
+```
+
+#### Simple mediation model (no interaction)  
+```{r mediation-social-support}
+# Mediation using the `mediation` package
+#  No interaction ####
+# Model with mediator as the outcome: 
+med.fit <- lm(social_support_karasek.st_23 ~ treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation)
+
+# Model with primary outcome and including mediator
+out.fit <- lm(PFI_score.st_23 ~ social_support_karasek.st_23 + treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation
+              # , family = binomial("probit")
+)
+
+# Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects)
+med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "social_support_karasek.st_23",
+                   control.value = "General workforce", treat.value = "Healthcare worker",
+                   boot = TRUE,
+                   robustSE = TRUE, # ignored when boot = TRUE
+                   sims = 1000);summary(med.out)
+
+med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "social_support_karasek.st_23",
+                       control.value = "General workforce", treat.value = "Other essential worker",
+                       boot = TRUE,
+                       robustSE = TRUE, # ignored when boot = TRUE
+                       sims = 1000);summary(med.out_key)
+```
+
+#### Sensitivity analysis for assumption of sequential ignorability  
+
+```{r mediation-social-support-plot, fig.width = 9, fig.height = 3}
+## Sensitivity analysis for assumption of sequential ignorability ####
+sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000)
+summary(sens.out)
+par(mfrow = c(1,3))
+plot(sens.out, sens.par = "rho", main = "Social support", ylim = c(-0.2, 0.2))
+plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "positive", main = "Residual variance")
+plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "positive", main = "Total variance")
+```
+While the Rho at which ACME = 0 is 0.5, the sensitivity region is actually quite large, as the confidence interval touches zero at nearly every point (**compare with the plot for autonomy**). So in this case, I think the assumption of sequential ignorability may be violated and we may need to **reconsider the model to account for a missing confounder**.
+
+#### Mediator-treatment interaction
+
+```{r mediation-social-support-interaction}
+# Alternative outcome model with treatment-mediator interaction
+out_int.fit <- lm(PFI_score.st_23 ~ social_support_karasek.st_23*treat 
+                  + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc
+                  + swiss_national.inc
+                  # + migration_status.inc + living_situation_rec.inc 
+                  , data = dat_mediation)
+```
+
+**Test: the general workforce (control) vs Healthcare workers (treatment)**
+```{r mediation-social-support-interaction-test-gen-health}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_health <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "social_support_karasek.st_23", 
+  control.value = "General workforce", treat.value = "Healthcare worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_health)
+test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction
+```
+
+**Test: the general workforce (control) vs Other essential workers (treatment)**
+```{r mediation-social-support-interaction-test-gen-key}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_key <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "social_support_karasek.st_23", 
+  control.value = "General workforce", treat.value = "Other essential worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_key)
+test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction
+```
+
+<!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r mediation-social-support-interaction-test-key-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_key_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "social_support_karasek.st_23",  -->
+<!--   control.value = "Other essential worker", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_key_health) -->
+<!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+#### Table output  
+
+```{r mediation-social-support-interaction-table}
+social_support_table <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Work social support", int_test = int_test_gen_health)|> 
+  mutate(comparison_g = "Healthcare workers")
+output_table(social_support_table, "Healthcare workers")
+```
+
+"The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)."
+```{r mediation-social-support-interaction-key-table}
+social_support_table_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Work social support", int_test = int_test_gen_key)|> 
+  mutate(comparison_g = "other essential workers")
+output_table(social_support_table_key, "other essential workers")
+```
+
+### Demands
+#### Linear relationship between outcome and mediators
+```{r mediation-demands-linear}
+dat_mediation |> 
+  ggplot(aes(x = demands_karasek.st_23, y = PFI_score.st_23))+
+  geom_point()+geom_smooth()
+```
+
+#### Simple mediation model (no interaction)
+```{r mediation-demands}
+# Mediation using the `mediation` package
+#  No interaction ####
+# Model with mediator as the outcome: 
+med.fit <- lm(demands_karasek.st_23 ~ treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation)
+
+# Model with primary outcome and including mediator
+out.fit <- lm(PFI_score.st_23 ~ demands_karasek.st_23 + treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation
+              # , family = binomial("probit")
+)
+
+# Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects)
+med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "demands_karasek.st_23",
+                   control.value = "General workforce", treat.value = "Healthcare worker",
+                   boot = TRUE,
+                   robustSE = TRUE, # ignored when boot = TRUE
+                   sims = 1000);summary(med.out)
+
+med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "demands_karasek.st_23",
+                       control.value = "General workforce", treat.value = "Other essential worker",
+                       boot = TRUE,
+                       robustSE = TRUE, # ignored when boot = TRUE
+                       sims = 1000);summary(med.out_key)
+```
+
+#### Sensitivity analysis for assumption of sequential ignorability  
+
+```{r mediation-demands-plot, fig.width = 9, fig.height = 3}
+## Sensitivity analysis for assumption of sequential ignorability ####
+sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000)
+summary(sens.out)
+par(mfrow = c(1,3))
+plot(sens.out, sens.par = "rho", main = "Demands", ylim = c(-0.2, 0.2))
+plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "negative", main = "Residual variance")
+plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "negative", main = "Total variance")
+```
+The Rho at which ACME = 0 is -0.3, which is reasonably high (though smaller in magnitude than our estimate for autonomy) and indicates that our estimates are fairly robust to the presence of unobserved pre-treatment confounders.
+
+#### Mediator-treatment interaction
+
+```{r mediation-demands-interaction}
+# Alternative outcome model with treatment-mediator interaction
+out_int.fit <- lm(PFI_score.st_23 ~ demands_karasek.st_23*treat 
+                  + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc
+                  + swiss_national.inc
+                  # + migration_status.inc + living_situation_rec.inc
+                  , data = dat_mediation)
+```
+
+**Test: the general workforce (control) vs Healthcare workers (treatment)**
+```{r mediation-demands-interaction-test-gen-health}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_health <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "demands_karasek.st_23", 
+  control.value = "General workforce", treat.value = "Healthcare worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_health)
+test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction
+```
+
+**Test: the general workforce (control) vs Other essential workers (treatment)**
+```{r mediation-demands-interaction-test-gen-key}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_key <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "demands_karasek.st_23", 
+  control.value = "General workforce", treat.value = "Other essential worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_key)
+test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction
+```
+
+<!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r mediation-demands-interaction-test-key-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_key_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "demands_karasek.st_23",  -->
+<!--   control.value = "Other essential worker", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_key_health) -->
+<!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+#### Table output  
+
+```{r mediation-demands-interaction-table}
+demands_table <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Demands", int_test = int_test_gen_health)|> 
+  mutate(comparison_g = "Healthcare workers")
+output_table(demands_table, "Healthcare workers")
+```
+
+"The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)."
+```{r mediation-demands-interaction-key-table}
+demands_table_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Demands", int_test = int_test_gen_key)|> 
+  mutate(comparison_g = "other essential workers")
+output_table(demands_table_key, "other essential workers")
+```
+
+### Efforts-Rewards Ratio
+#### Linear relationship between outcome and mediators
+```{r mediation-efforts-linear}
+dat_mediation |> 
+  ggplot(aes(x = ER_ratio.st_23, y = PFI_score.st_23))+
+  geom_point()+geom_smooth()
+```
+
+#### Simple mediation model (no interaction)
+```{r mediation-efforts-rewards}
+# Mediation using the `mediation` package
+#  No interaction ####
+# Model with mediator as the outcome: 
+med.fit <- lm(ER_ratio.st_23 ~ treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation)
+
+# Model with primary outcome and including mediator
+out.fit <- lm(PFI_score.st_23 ~ ER_ratio.st_23 + treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation
+              # , family = binomial("probit")
+)
+
+# Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects)
+med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "ER_ratio.st_23",
+                   control.value = "General workforce", treat.value = "Healthcare worker",
+                   boot = TRUE,
+                   robustSE = TRUE, # ignored when boot = TRUE
+                   sims = 1000);summary(med.out)
+
+med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "ER_ratio.st_23",
+                       control.value = "General workforce", treat.value = "Other essential worker",
+                       boot = TRUE,
+                       robustSE = TRUE, # ignored when boot = TRUE
+                       sims = 1000);summary(med.out_key)
+```
+
+#### Sensitivity analysis for assumption of sequential ignorability  
+
+```{r mediation-efforts-rewards-plot, fig.width = 9, fig.height = 3}
+## Sensitivity analysis for assumption of sequential ignorability ####
+sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000)
+summary(sens.out)
+par(mfrow = c(1,3))
+plot(sens.out, sens.par = "rho", main = "Efforts-Rewards ratio", ylim = c(-0.2, 0.2))
+plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "negative", main = "Residual variance")
+plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "negative", main = "Total variance")
+```
+While the Rho at which ACME = 0 is -0.4, the sensitivity region is actually quite large, as the confidence interval touches zero at nearly every point (**compare with the plot for autonomy**). So in this case, I think the assumption of sequential ignorability may be violated and we may need to **reconsider the model to account for a missing confounder**.
+
+#### Mediator-treatment interaction
+
+```{r mediation-efforts-rewards-interaction}
+# Alternative outcome model with treatment-mediator interaction
+out_int.fit <- lm(PFI_score.st_23 ~ ER_ratio.st_23*treat 
+                  + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc
+                  + swiss_national.inc
+                  # + migration_status.inc + living_situation_rec.inc
+                  , data = dat_mediation)
+```
+
+**Test: the general workforce (control) vs Healthcare workers (treatment)**
+```{r mediation-efforts-rewards-interaction-test-gen-health}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_health <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "ER_ratio.st_23", 
+  control.value = "General workforce", treat.value = "Healthcare worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_health)
+test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction
+```
+
+**Test: the general workforce (control) vs Other essential workers (treatment)**
+```{r mediation-efforts-rewards-interaction-test-gen-key}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_key <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "ER_ratio.st_23", 
+  control.value = "General workforce", treat.value = "Other essential worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_key)
+test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction
+```
+
+<!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r mediation-efforts-rewards-interaction-test-key-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_key_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "ER_ratio.st_23",  -->
+<!--   control.value = "Other essential worker", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_key_health) -->
+<!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+#### Table output  
+
+```{r mediation-ERI-interaction-table}
+eri_table <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "ERI", int_test = int_test_gen_health)|> 
+  mutate(comparison_g = "Healthcare workers")
+output_table(eri_table, "Healthcare workers")
+```
+
+"The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)."
+```{r mediation-ERI-interaction-key-table}
+eri_table_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "ERI", int_test = int_test_gen_key)|> 
+  mutate(comparison_g = "other essential workers")
+output_table(eri_table_key, "other essential workers")
+```
+
+### Overcommitment
+#### Linear relationship between outcome and mediators
+```{r mediation-overcommitment-linear}
+dat_mediation |> 
+  ggplot(aes(x = overcommitment_siegrist.st_23, y = PFI_score.st_23))+
+  geom_point()+geom_smooth()
+```
+
+#### Simple mediation model (no interaction)
+```{r mediation-overcommitment}
+# Mediation using the `mediation` package
+#  No interaction ####
+# Model with mediator as the outcome: 
+med.fit <- lm(overcommitment_siegrist.st_23 ~ treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation)
+
+# Model with primary outcome and including mediator
+out.fit <- lm(PFI_score.st_23 ~ overcommitment_siegrist.st_23 + treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation
+              # , family = binomial("probit")
+)
+
+# Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects)
+med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",
+                   control.value = "General workforce", treat.value = "Healthcare worker",
+                   boot = TRUE,
+                   robustSE = TRUE, # ignored when boot = TRUE
+                   sims = 1000);summary(med.out)
+
+med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",
+                       control.value = "General workforce", treat.value = "Other essential worker",
+                       boot = TRUE,
+                       robustSE = TRUE, # ignored when boot = TRUE
+                       sims = 1000);summary(med.out_key)
+```
+
+#### Sensitivity analysis for assumption of sequential ignorability  
+
+```{r mediation-overcommitment-plot, fig.width = 9, fig.height = 3}
+## Sensitivity analysis for assumption of sequential ignorability ####
+sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000)
+summary(sens.out)
+par(mfrow = c(1,3))
+plot(sens.out, sens.par = "rho", main = "Overcommitment", ylim = c(-0.2, 0.2))
+plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "negative", main = "Residual variance")
+plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "negative", main = "Total variance")
+```
+
+#### Mediator-treatment interaction
+
+```{r mediation-overcommitment-interaction}
+# Alternative outcome model with treatment-mediator interaction
+out_int.fit <- lm(PFI_score.st_23 ~ overcommitment_siegrist.st_23*treat 
+                  + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc 
+                  + swiss_national.inc
+                  # + migration_status.inc + living_situation_rec.inc 
+                  , data = dat_mediation)
+```
+
+**Test: the general workforce (control) vs Healthcare workers (treatment)**
+```{r mediation-overcommitment-interaction-test-gen-health}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_health <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23", 
+  control.value = "General workforce", treat.value = "Healthcare worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_health)
+test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction
+```
+
+**Test: the general workforce (control) vs Other essential workers (treatment)**
+```{r mediation-overcommitment-interaction-test-gen-key}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_key <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23", 
+  control.value = "General workforce", treat.value = "Other essential worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_key)
+test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction
+```
+
+<!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r mediation-overcommitment-interaction-test-key-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_key_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",  -->
+<!--   control.value = "Other essential worker", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_key_health) -->
+<!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+#### Table output  
+
+```{r mediation-Overcommitment-interaction-table}
+overcommitment_table <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Overcommitment", int_test = int_test_gen_health)|> 
+  mutate(comparison_g = "Healthcare workers")
+output_table(overcommitment_table, "Healthcare workers")
+```
+
+"The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)."
+```{r mediation-Overcommitment-interaction-key-table}
+overcommitment_table_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Overcommitment", int_test = int_test_gen_key)|> 
+  mutate(comparison_g = "other essential workers")
+output_table(overcommitment_table_key, "other essential workers")
+```
+
+### Combined table
+#### General vs. Healthcare workers
+```{r final-table-gen-health}
+final_table_gen_health <- cbind(
+  autonomy_table |> select(average_effect), 
+  autonomy_table |> select(no_interaction_full),
+  social_support_table |> select(no_interaction_full),
+  demands_table |> select(no_interaction_full),
+  eri_table |> select(no_interaction_full),
+  overcommitment_table |> select(no_interaction_full)
+)
+colnames(final_table_gen_health) <- c("Average effect", 
+                                      "Autonomy",
+                                      "Social support", "Demands", "ERI", "Overcommitment")
+combined_table_output_health <- final_table_gen_health |> 
+  filter(`Average effect` != "Avg. proportion mediated") |> 
+  myflextable() |>  
+  # merge_at(i = 3, j = 3:4) |> 
+  # merge_at(i = 5, j = 3:4) |> 
+  # labelizor(part = "header", labels = c(average_effect = "Average effect",no_interaction_full = "No\ninteraction", 
+  #                                       under_control_full = "Within\nreference", under_treatment_full = "Within\ncomparison")) |> 
+  add_header_row(values = c("","Without interaction", "Without interaction", "Without interaction", "Without interaction", "Without interaction"), top = TRUE, ) |>
+  merge_h(part = "header") |> 
+  theme_zebra(odd_header = "transparent") |> 
+  border_remove() |> 
+  hline_bottom() |> hline_top() |> 
+  hline(part = "header", j = 2:6) |> 
+  align(j = 2:6, align = "center", part = "all") |>
+  align(j = 1, align = "center", part = "header") |> 
+  add_footer_lines(paste0("Note: Each cell shows the point estimate and its corresponding 95% confidence interval. Results are from models without exposure-mediator interaction terms, and the groups of comparison are between the general workforce (reference group) and healthcare workers.")) |> 
+  fontsize(size = 10, part = "all") |> 
+  autofit() |> 
+  width(j = c(2,4), width = 3, unit = "cm") |>
+  width(j = c(3,5), width = 3.2, unit = "cm") |>
+  width(j = c(6), width = 3.3, unit = "cm") |>
+  width(j = 1, width = 2, unit = "cm")
+
+save_as_docx("Combined_health" = combined_table_output_health, 
+             path = here("output", "publication figures", paste0(format(Sys.time(),"%Y-%m-%d-%H%M_"), 
+                                                                 "Mediation_combined_healthcare.docx")))
+combined_table_output_health
+```
+
+#### General vs Key workers
+```{r final-table-gen-key}
+final_table_gen_key <- cbind(
+  autonomy_table_key |> select(average_effect), autonomy_table_key |> select(no_interaction_full), 
+  social_support_table_key |> select(no_interaction_full),
+  demands_table_key |> select(no_interaction_full),
+  eri_table_key |> select(no_interaction_full),
+  overcommitment_table_key |> select(no_interaction_full)
+)
+colnames(final_table_gen_key) <- c("Average effect", "Autonomy", "Social support", "Demands", "ERI", "Overcommitment")
+combined_table_output_key <- final_table_gen_key |> 
+  filter(`Average effect` != "Avg. proportion mediated"
+         # , `Average effect` != "Proportion mediated"
+  ) |> 
+  myflextable() |>  
+  # merge_at(i = 3, j = 3:4) |> 
+  # merge_at(i = 5, j = 3:4) |> 
+  labelizor(part = "header", labels = c(average_effect = "Average effect",no_interaction_full = "No\ninteraction", 
+                                        under_control_full = "Within\nreference", under_treatment_full = "Within\ncomparison")) |> 
+  add_header_row(values = c("","Without interaction", "Without interaction", "Without interaction", "Without interaction", "Without interaction"), top = TRUE, ) |>
+  merge_h(part = "header") |> 
+  theme_zebra(odd_header = "transparent") |> 
+  border_remove() |> 
+  hline_bottom() |> hline_top() |> 
+  hline(part = "header", j = 2:6) |> 
+  align(j = 2:6, align = "center", part = "all") |>
+  align(j = 1, align = "center", part = "header") |> 
+  add_footer_lines(paste0("Note: Each cell shows the point estimate and its corresponding 95% confidence interval. Results are from models without exposure-mediator interaction terms, and the groups of comparison are between the general workforce (reference group) and Other essential workers.")) |> 
+  fontsize(size = 10, part = "all") |> 
+  autofit() |> 
+  width(j = c(2), width = 3.3, unit = "cm") |>
+  width(j = c(4), width = 3.1, unit = "cm") |>
+  width(j = c(3,5), width = 3.2, unit = "cm") |>
+  width(j = c(6), width = 3.3, unit = "cm") |>
+  width(j = 1, width = 2, unit = "cm");combined_table_output_key
+
+save_as_docx("Combined_other_key" = combined_table_output_key, 
+             path = here("output", "publication figures", paste0(format(Sys.time(),"%Y-%m-%d-%H%M_"), 
+                                                                 "Mediation_combined_other_key.docx")))
+combined_table_output_key
+```
+
+```{r final-data-table}
+# Save the final data table to be able to easily refer to the estimates and p values
+final_data_table_mediation <- rbind(
+  autonomy_table,
+  social_support_table,
+  demands_table,
+  eri_table,
+  overcommitment_table,
+  autonomy_table_key,
+  social_support_table_key,
+  demands_table_key,
+  eri_table_key,
+  overcommitment_table_key
+)
+
+saveRDS(final_data_table_mediation, file = here("output", "PFI_final_data_table_mediation.rds"))
+```
+
+### PHQ2 ~ PFI
+
+#### Linear relationship between outcome and mediators
+```{r mediation-pfi-phq2-linear}
+dat_mediation |> 
+  ggplot(aes(x = PHQ2_score, y = PFI_score.st_23))+
+  geom_point()+geom_smooth()
+```
+
+#### Simple mediation model (no interaction)
+```{r mediation-pfi-phq2}
+# Mediation using the `mediation` package
+#  No interaction ####
+# Model with mediator as the outcome: 
+med.fit <- lm(PFI_score.st_23 ~ treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation)
+
+# Model with primary outcome and including mediator
+out.fit <- lm(PHQ2_score ~ PFI_score.st_23 + treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation
+              # , family = binomial("probit")
+)
+
+# Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects)
+med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "PFI_score.st_23",
+                   control.value = "General workforce", treat.value = "Healthcare worker",
+                   boot = TRUE,
+                   robustSE = TRUE, # ignored when boot = TRUE
+                   sims = 1000);summary(med.out)
+
+med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "PFI_score.st_23",
+                       control.value = "General workforce", treat.value = "Other essential worker",
+                       boot = TRUE,
+                       robustSE = TRUE, # ignored when boot = TRUE
+                       sims = 1000);summary(med.out_key)
+```
+
+#### Sensitivity analysis for assumption of sequential ignorability  
+
+```{r mediation-pfi-phq2-plot, fig.width = 9, fig.height = 3}
+## Sensitivity analysis for assumption of sequential ignorability ####
+sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000)
+summary(sens.out)
+par(mfrow = c(1,3))
+plot(sens.out, sens.par = "rho", main = "PHQ2 ~ PFI", ylim = c(-0.2, 0.2))
+plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "negative", main = "Residual variance")
+plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "negative", main = "Total variance")
+```
+
+#### Mediator-treatment interaction
+
+```{r mediation-pfi-phq2-interaction}
+# Alternative outcome model with treatment-mediator interaction
+out_int.fit <- lm(PHQ2_score ~ PFI_score.st_23*treat 
+                  + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc 
+                  + swiss_national.inc
+                  # + migration_status.inc + living_situation_rec.inc 
+                  , data = dat_mediation)
+```
+
+**Test: the general workforce (control) vs Healthcare workers (treatment)**
+```{r mediation-pfi-phq2-interaction-test-gen-health}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_health <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "PFI_score.st_23", 
+  control.value = "General workforce", treat.value = "Healthcare worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_health)
+test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction
+```
+
+**Test: the general workforce (control) vs Other essential workers (treatment)**
+```{r mediation-pfi-phq2-interaction-test-gen-key}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_key <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "PFI_score.st_23", 
+  control.value = "General workforce", treat.value = "Other essential worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_key)
+test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction
+```
+
+<!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r mediation-pfi-phq2-interaction-test-key-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_key_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",  -->
+<!--   control.value = "Other essential worker", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_key_health) -->
+<!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+#### Table output  
+
+```{r mediation-pfi-phq2-interaction-table}
+phq2_table <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "PFI_score.st_23", int_test = int_test_gen_health)|> 
+  mutate(comparison_g = "Healthcare workers")
+output_table(phq2_table, "Healthcare workers")
+```
+
+"The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)."
+```{r mediation-pfi-phq2-interaction-key-table}
+PHQ2_table_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "PFI_score.st_23", int_test = int_test_gen_key)|> 
+  mutate(comparison_g = "other essential workers")
+output_table(PHQ2_table_key, "other essential workers")
+```
+
+### GAD2 ~ PFI
+
+#### Linear relationship between outcome and mediators
+```{r mediation-pfi-GAD2-linear}
+dat_mediation |> 
+  ggplot(aes(x = GAD2_score, y = PFI_score.st_23))+
+  geom_point()+geom_smooth()
+```
+
+#### Simple mediation model (no interaction)
+```{r mediation-pfi-GAD2}
+# Mediation using the `mediation` package
+#  No interaction ####
+# Model with mediator as the outcome: 
+med.fit <- lm(PFI_score.st_23 ~ treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation)
+
+# Model with primary outcome and including mediator
+out.fit <- lm(GAD2_score ~ PFI_score.st_23 + treat
+              # confounders as covariates
+              + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc +
+                Pre_existing_physical_condition.inc 
+              + swiss_national.inc
+              # + migration_status.inc + living_situation_rec.inc
+              , data = dat_mediation
+              # , family = binomial("probit")
+)
+
+# Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects)
+med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "PFI_score.st_23",
+                   control.value = "General workforce", treat.value = "Healthcare worker",
+                   boot = TRUE,
+                   robustSE = TRUE, # ignored when boot = TRUE
+                   sims = 1000);summary(med.out)
+
+med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "PFI_score.st_23",
+                       control.value = "General workforce", treat.value = "Other essential worker",
+                       boot = TRUE,
+                       robustSE = TRUE, # ignored when boot = TRUE
+                       sims = 1000);summary(med.out_key)
+```
+
+#### Sensitivity analysis for assumption of sequential ignorability  
+
+```{r mediation-pfi-GAD2-plot, fig.width = 9, fig.height = 3}
+## Sensitivity analysis for assumption of sequential ignorability ####
+sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000)
+summary(sens.out)
+par(mfrow = c(1,3))
+plot(sens.out, sens.par = "rho", main = "GAD2 ~ PFI", ylim = c(-0.2, 0.2))
+plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "negative", main = "Residual variance")
+plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "negative", main = "Total variance")
+```
+
+#### Mediator-treatment interaction
+
+```{r mediation-pfi-GAD2-interaction}
+# Alternative outcome model with treatment-mediator interaction
+out_int.fit <- lm(GAD2_score ~ PFI_score.st_23*treat 
+                  + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc 
+                  + swiss_national.inc
+                  # + migration_status.inc + living_situation_rec.inc 
+                  , data = dat_mediation)
+```
+
+**Test: the general workforce (control) vs Healthcare workers (treatment)**
+```{r mediation-pfi-GAD2-interaction-test-gen-health}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_health <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "PFI_score.st_23", 
+  control.value = "General workforce", treat.value = "Healthcare worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_health)
+test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction
+```
+
+**Test: the general workforce (control) vs Other essential workers (treatment)**
+```{r mediation-pfi-GAD2-interaction-test-gen-key}
+# Mediate function to test for treatment-mediator interaction
+med_int.out_gen_key <- mediate(
+  med.fit, out_int.fit, treat = "treat", mediator = "PFI_score.st_23", 
+  control.value = "General workforce", treat.value = "Other essential worker",
+  boot = TRUE, boot.ci.type = "bca", sims = 1000)
+summary(med_int.out_gen_key)
+test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction
+int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction
+```
+
+<!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r mediation-pfi-GAD2-interaction-test-key-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_key_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",  -->
+<!--   control.value = "Other essential worker", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_key_health) -->
+<!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+#### Table output  
+
+```{r mediation-pfi-GAD2-interaction-table}
+GAD2_table <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "PFI_score.st_23", int_test = int_test_gen_health)|> 
+  mutate(comparison_g = "Healthcare workers")
+output_table(GAD2_table, "Healthcare workers")
+```
+
+"The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)."
+```{r mediation-pfi-GAD2-interaction-key-table}
+GAD2_table_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "PFI_score.st_23", int_test = int_test_gen_key)|> 
+  mutate(comparison_g = "other essential workers")
+output_table(GAD2_table_key, "other essential workers")
+```
+
+### Combined table PHQ /GAD
+#### General vs. Healthcare workers
+```{r final-table-PHQGAD-gen-health}
+final_table_PHQGAD_health <- cbind(
+  phq2_table |> select(average_effect, no_interaction_full),
+  GAD2_table |> select(no_interaction_full)
+)
+colnames(final_table_PHQGAD_health) <- c("Average effect", 
+                                      "Depression",
+                                      "Anxiety")
+
+combined_table_output_PHQGAD_health <- final_table_PHQGAD_health |> 
+  filter(`Average effect` != "Avg. proportion mediated") |> 
+  myflextable() |>  
+  # merge_at(i = 3, j = 3:4) |> 
+  # merge_at(i = 5, j = 3:4) |> 
+  # labelizor(part = "header", labels = c(average_effect = "Average effect",no_interaction_full = "No\ninteraction", 
+  #                                       under_control_full = "Within\nreference", under_treatment_full = "Within\ncomparison")) |> 
+  # add_header_row(values = c("","Without interaction", "Without interaction"), top = TRUE, ) |>
+  # merge_h(part = "header") |> 
+  theme_zebra(odd_header = "transparent") |> 
+  border_remove() |> 
+  hline_bottom() |> hline_top() |> 
+  hline(part = "header", j = 2:3) |> 
+  align(j = 2:3, align = "center", part = "all") |>
+  align(j = 1, align = "center", part = "header") |> 
+  add_footer_lines(paste0("Note: Each cell shows the point estimate and its corresponding 95% confidence interval. Results are from models without exposure-mediator interaction terms, and the groups of comparison are between the general workforce (reference group) and healthcare workers.")) |> 
+  fontsize(size = 10, part = "all") |> 
+  autofit() |> 
+  width(j = c(2,3), width = 3.5, unit = "cm") |>
+  # width(j = c(3,5), width = 3.2, unit = "cm") |>
+  # width(j = c(6), width = 3.3, unit = "cm") |>
+  width(j = 1, width = 2, unit = "cm")
+
+save_as_docx("Combined_health" = combined_table_output_PHQGAD_health, 
+             path = here("output", "publication figures", paste0(format(Sys.time(),"%Y-%m-%d-%H%M_"), 
+                                                                 "Mediation_combined_PHQGAD_healthcare.docx")))
+combined_table_output_PHQGAD_health
+```
+
+#### General vs Key workers
+```{r final-table-PHQGAD-gen-key}
+final_table_PHQGAD_key <- cbind(
+  PHQ2_table_key |> select(average_effect, no_interaction_full),
+  GAD2_table_key |> select(no_interaction_full)
+)
+colnames(final_table_PHQGAD_key) <- c("Average effect", 
+                                      "Depression",
+                                      "Anxiety")
+
+combined_table_PHQGAD_output_key <- final_table_PHQGAD_key |> 
+  filter(`Average effect` != "Avg. proportion mediated"
+         # , `Average effect` != "Proportion mediated"
+  ) |> 
+  myflextable() |>  
+  # merge_at(i = 3, j = 3:4) |> 
+  # merge_at(i = 5, j = 3:4) |> 
+  labelizor(part = "header", labels = c(average_effect = "Average effect",no_interaction_full = "No\ninteraction", 
+                                        under_control_full = "Within\nreference", under_treatment_full = "Within\ncomparison")) |> 
+  theme_zebra(odd_header = "transparent") |> 
+  border_remove() |> 
+  hline_bottom() |> hline_top() |> 
+  hline(part = "header", j = 2:3) |>
+  align(j = 2:3, align = "center", part = "all") |>
+  align(j = 1, align = "center", part = "header") |> 
+  add_footer_lines(paste0("Note: Each cell shows the point estimate and its corresponding 95% confidence interval. Results are from models without exposure-mediator interaction terms, and the groups of comparison are between the general workforce (reference group) and Other essential workers.")) |> 
+  fontsize(size = 10, part = "all") |> 
+  autofit() |> 
+  width(j = c(2,3), width = 3.3, unit = "cm") |>
+  # width(j = c(4), width = 3.1, unit = "cm") |>
+  # width(j = c(3,5), width = 3.2, unit = "cm") |>
+  # width(j = c(6), width = 3.3, unit = "cm") |>
+  width(j = 1, width = 2, unit = "cm");combined_table_PHQGAD_output_key
+
+save_as_docx("Combined_other_key" = combined_table_PHQGAD_output_key, 
+             path = here("output", "publication figures", paste0(format(Sys.time(),"%Y-%m-%d-%H%M_"), 
+                                                                 "Mediation_combined_PHQGAD_other_key.docx")))
+combined_table_output_key
+```
+
+<!-- ## PHQ2 mediation analysis {.tabset} -->
+
+<!-- ### Autonomy   -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r PHQ2-mediation-autonomy-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = autonomy_karasek.st_23, y = PHQ2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction) -->
+<!-- ```{r PHQ2-mediation-autonomy} -->
+<!-- med.fit <- lm(autonomy_karasek.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(PHQ2_score ~ autonomy_karasek.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "autonomy_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "autonomy_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+<!-- ```{r PHQ2-mediation-autonomy-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- # The sensitivity analysis is only implemented for the following three model combinations:  -->
+<!-- # 1) linear mediator and outcome models (both of class 'lm'),  -->
+<!-- # 2) binary probit mediator (fitted via 'glm' with family "binomial" and link "probit") and linear outcome models,  -->
+<!-- # 3) and linear mediator and binary probit outcome models.  -->
+<!-- # In addition, the binary outcome model cannot include a treatment-mediator interaction term. -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Autonomy", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "negative", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "negative", main = "Total variance") -->
+<!-- ``` -->
+<!-- Rho at which ACME = 0 is -0.2, which is reasonably far from 0 and has a tight 95% CI, indicating that our estimates for the mediating role of autonomy are reasonably robust to the presence of unobserved pre-treatment confounders. -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- **Estimates:** -->
+<!-- ```{r PHQ2-mediation-autonomy-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(PHQ2_score ~ autonomy_karasek.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-autonomy-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "autonomy_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-autonomy-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "autonomy_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r PHQ2-mediation-autonomy-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "autonomy_karasek.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+
+<!-- #### Table output   -->
+<!-- ```{r PHQ2-mediation-autonomy-interaction-table} -->
+<!-- autonomy_table_PHQ2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Autonomy", int_test = int_test_gen_health) |>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(autonomy_table_PHQ2, "Healthcare workers") -->
+<!-- ``` -->
+
+
+<!-- ```{r PHQ2-mediation-autonomy-interaction-key-table} -->
+<!-- autonomy_table_PHQ2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Autonomy", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(autonomy_table_PHQ2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Work social support   -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r PHQ2-mediation-social-support-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = social_support_karasek.st_23, y = PHQ2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction)   -->
+<!-- ```{r PHQ2-mediation-social-support} -->
+<!-- # Mediation using the `mediation` package -->
+<!-- #  No interaction #### -->
+<!-- # Model with mediator as the outcome:  -->
+<!-- med.fit <- lm(social_support_karasek.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(PHQ2_score ~ social_support_karasek.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "social_support_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "social_support_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+
+<!-- ```{r PHQ2-mediation-social-support-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Social support", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "negative", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "negative", main = "Total variance") -->
+<!-- ``` -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- ```{r PHQ2-mediation-social-support-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(PHQ2_score ~ social_support_karasek.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-social-support-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "social_support_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-social-support-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "social_support_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r PHQ2-mediation-social-support-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "social_support_karasek.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+<!-- #### Table output   -->
+
+<!-- ```{r PHQ2-mediation-social-support-interaction-table} -->
+<!-- social_support_table_PHQ2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Work social support", int_test = int_test_gen_health)|>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(social_support_table_PHQ2, "Healthcare workers") -->
+<!-- ``` -->
+
+<!-- "The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)." -->
+<!-- ```{r PHQ2-mediation-social-support-interaction-key-table} -->
+<!-- social_support_table_PHQ2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Work social support", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(social_support_table_PHQ2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Demands -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r PHQ2-mediation-demands-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = demands_karasek.st_23, y = PHQ2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction) -->
+<!-- ```{r PHQ2-mediation-demands} -->
+<!-- # Mediation using the `mediation` package -->
+<!-- #  No interaction #### -->
+<!-- # Model with mediator as the outcome:  -->
+<!-- med.fit <- lm(demands_karasek.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(PHQ2_score ~ demands_karasek.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "demands_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "demands_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+
+<!-- ```{r PHQ2-mediation-demands-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Demands", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "positive", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "positive", main = "Total variance") -->
+<!-- ``` -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- ```{r PHQ2-mediation-demands-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(PHQ2_score ~ demands_karasek.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-demands-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "demands_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-demands-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "demands_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r PHQ2-mediation-demands-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "demands_karasek.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+<!-- #### Table output   -->
+
+<!-- ```{r PHQ2-mediation-demands-interaction-table} -->
+<!-- demands_table_PHQ2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Demands", int_test = int_test_gen_health)|>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(demands_table_PHQ2, "Healthcare workers") -->
+<!-- ``` -->
+
+<!-- "The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)." -->
+<!-- ```{r PHQ2-mediation-demands-interaction-key-table} -->
+<!-- demands_table_PHQ2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Demands", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(demands_table_PHQ2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Efforts-Rewards Ratio -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r PHQ2-mediation-efforts-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = ER_ratio.st_23, y = PHQ2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction) -->
+<!-- ```{r PHQ2-mediation-efforts-rewards} -->
+<!-- # Mediation using the `mediation` package -->
+<!-- #  No interaction #### -->
+<!-- # Model with mediator as the outcome:  -->
+<!-- med.fit <- lm(ER_ratio.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(PHQ2_score ~ ER_ratio.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "ER_ratio.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "ER_ratio.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+
+<!-- ```{r PHQ2-mediation-efforts-rewards-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Efforts-Rewards ratio", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "positive", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "positive", main = "Total variance") -->
+<!-- ``` -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- ```{r PHQ2-mediation-efforts-rewards-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(PHQ2_score ~ ER_ratio.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-efforts-rewards-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "ER_ratio.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-efforts-rewards-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "ER_ratio.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r PHQ2-mediation-efforts-rewards-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "ER_ratio.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+<!-- #### Table output   -->
+
+<!-- ```{r PHQ2-mediation-ERI-interaction-table} -->
+<!-- eri_table_PHQ2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "ERI", int_test = int_test_gen_health)|>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(eri_table_PHQ2, "Healthcare workers") -->
+<!-- ``` -->
+
+<!-- "The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)." -->
+<!-- ```{r PHQ2-mediation-ERI-interaction-key-table} -->
+<!-- eri_table_PHQ2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "ERI", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(eri_table_PHQ2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Overcommitment -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r PHQ2-mediation-overcommitment-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = overcommitment_siegrist.st_23, y = PHQ2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction) -->
+<!-- ```{r PHQ2-mediation-overcommitment} -->
+<!-- # Mediation using the `mediation` package -->
+<!-- #  No interaction #### -->
+<!-- # Model with mediator as the outcome:  -->
+<!-- med.fit <- lm(overcommitment_siegrist.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(PHQ2_score ~ overcommitment_siegrist.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+
+<!-- ```{r PHQ2-mediation-overcommitment-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Overcommitment", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "positive", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "positive", main = "Total variance") -->
+<!-- ``` -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- ```{r PHQ2-mediation-overcommitment-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(PHQ2_score ~ overcommitment_siegrist.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-overcommitment-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r PHQ2-mediation-overcommitment-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r PHQ2-mediation-overcommitment-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+<!-- #### Table output   -->
+
+<!-- ```{r PHQ2-mediation-Overcommitment-interaction-table} -->
+<!-- overcommitment_table_PHQ2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Overcommitment", int_test = int_test_gen_health)|>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(overcommitment_table_PHQ2, "Healthcare workers") -->
+<!-- ``` -->
+
+<!-- "The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)." -->
+<!-- ```{r PHQ2-mediation-Overcommitment-interaction-key-table} -->
+<!-- overcommitment_table_PHQ2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Overcommitment", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(overcommitment_table_PHQ2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Combined table -->
+<!-- #### General vs. Healthcare workers -->
+<!-- ```{r PHQ2-final-table-gen-health} -->
+<!-- final_table_PHQ2_gen_health <- cbind( -->
+<!--   autonomy_table_PHQ2 |> select(average_effect),  -->
+<!--   autonomy_table_PHQ2 |> select(no_interaction_full), -->
+<!--   social_support_table_PHQ2 |> select(no_interaction_full), -->
+<!--   demands_table_PHQ2 |> select(no_interaction_full), -->
+<!--   eri_table_PHQ2 |> select(no_interaction_full), -->
+<!--   overcommitment_table_PHQ2 |> select(no_interaction_full) -->
+<!--   ) -->
+<!-- colnames(final_table_PHQ2_gen_health) <- c("Average effect",  -->
+<!--                                       "Autonomy", -->
+<!--                                       "Social support", "Demands", "ERI", "Overcommitment") -->
+<!-- final_table_PHQ2_gen_health |>  -->
+<!--   filter(`Average effect` != "Avg. proportion mediated") |>  -->
+<!--   myflextable() |>   -->
+<!--     # merge_at(i = 3, j = 3:4) |>  -->
+<!--     # merge_at(i = 5, j = 3:4) |>  -->
+<!--     # labelizor(part = "header", labels = c(average_effect = "Average effect",no_interaction_full = "No\ninteraction",  -->
+<!--     #                                       under_control_full = "Within\nreference", under_treatment_full = "Within\ncomparison")) |>  -->
+<!--     add_header_row(values = c("","Without interaction", "Without interaction", "Without interaction", "Without interaction", "Without interaction"), top = TRUE, ) |> -->
+<!--     merge_h(part = "header") |>  -->
+<!--     width(j = 1, width = 3.3, unit = "cm") |>  -->
+<!--     width(j = 2:6, width = 4, unit = "cm") |>  -->
+<!--     theme_zebra(odd_header = "transparent") |>  -->
+<!--     border_remove() |>  -->
+<!--     hline_bottom() |> hline_top() |>  -->
+<!--     hline(part = "header", j = 2:6) |>  -->
+<!--     align(j = 2:6, align = "center", part = "all") |> -->
+<!--     align(j = 1, align = "center", part = "header") |>  -->
+<!--     add_footer_lines(paste0("Note: Each cell shows the point estimate and its corresponding 95% confidence interval. Results are from models without exposure-mediator interaction terms, and the groups of comparison are between the general workforce (reference group) and Healthcare workers.")) -->
+<!-- ``` -->
+
+<!-- #### General vs Key workers -->
+<!-- ```{r PHQ2-final-table-gen-key} -->
+<!-- final_table_PHQ2_gen_key <- cbind( -->
+<!--   autonomy_table_PHQ2_key |> select(average_effect), autonomy_table_PHQ2_key |> select(no_interaction_full),  -->
+<!--   social_support_table_PHQ2_key |> select(no_interaction_full), -->
+<!--   demands_table_PHQ2_key |> select(no_interaction_full), -->
+<!--   eri_table_PHQ2_key |> select(no_interaction_full), -->
+<!--   overcommitment_table_PHQ2_key |> select(no_interaction_full) -->
+<!--   ) -->
+<!-- colnames(final_table_PHQ2_gen_key) <- c("Average effect", "Autonomy", "Social support", "Demands", "ERI", "Overcommitment") -->
+<!-- final_table_PHQ2_gen_key |>  -->
+<!--   filter(`Average effect` != "Avg. proportion mediated") |>  -->
+<!--   myflextable() |>   -->
+<!--     # merge_at(i = 3, j = 3:4) |>  -->
+<!--     # merge_at(i = 5, j = 3:4) |>  -->
+<!--     labelizor(part = "header", labels = c(average_effect = "Average effect",no_interaction_full = "No\ninteraction",  -->
+<!--                                           under_control_full = "Within\nreference", under_treatment_full = "Within\ncomparison")) |>  -->
+<!--     add_header_row(values = c("","Without interaction", "Without interaction", "Without interaction", "Without interaction", "Without interaction"), top = TRUE, ) |> -->
+<!--     merge_h(part = "header") |>  -->
+<!--     width(j = 1, width = 3.1, unit = "cm") |>  -->
+<!--     width(j = 2:6, width = 4, unit = "cm") |>  -->
+<!--     theme_zebra(odd_header = "transparent") |>  -->
+<!--     border_remove() |>  -->
+<!--     hline_bottom() |> hline_top() |>  -->
+<!--     hline(part = "header", j = 2:6) |>  -->
+<!--     align(j = 2:6, align = "center", part = "all") |> -->
+<!--     align(j = 1, align = "center", part = "header") |>  -->
+<!--     add_footer_lines(paste0("Note: Each cell shows the point estimate and its corresponding 95% confidence interval. Results are from models without exposure-mediator interaction terms, and the groups of comparison are between the general workforce (reference group) and key workers.")) -->
+<!-- ``` -->
+
+<!-- ```{r PHQ2-final-data-table} -->
+<!-- # Save the final data table to be able to easily refer to the estimates and p values -->
+<!-- final_data_table_PHQ2_mediation <- rbind( -->
+<!--   autonomy_table_PHQ2, -->
+<!--   social_support_table_PHQ2, -->
+<!--   demands_table_PHQ2, -->
+<!--   eri_table_PHQ2, -->
+<!--   overcommitment_table_PHQ2, -->
+<!--   autonomy_table_PHQ2_key, -->
+<!--   social_support_table_PHQ2_key, -->
+<!--   demands_table_PHQ2_key, -->
+<!--   eri_table_PHQ2_key, -->
+<!--   overcommitment_table_PHQ2_key -->
+<!-- ) -->
+
+<!-- saveRDS(final_data_table_PHQ2_mediation, file = here("output", "final_data_table_PHQ2_mediation.rds")) -->
+<!-- ``` -->
+
+
+<!-- ## GAD2 mediation analysis {.tabset} -->
+
+<!-- ### Autonomy   -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r GAD2-mediation-autonomy-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = autonomy_karasek.st_23, y = GAD2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction) -->
+<!-- ```{r GAD2-mediation-autonomy} -->
+<!-- med.fit <- lm(autonomy_karasek.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(GAD2_score ~ autonomy_karasek.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "autonomy_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "autonomy_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+<!-- ```{r GAD2-mediation-autonomy-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- # The sensitivity analysis is only implemented for the following three model combinations:  -->
+<!-- # 1) linear mediator and outcome models (both of class 'lm'),  -->
+<!-- # 2) binary probit mediator (fitted via 'glm' with family "binomial" and link "probit") and linear outcome models,  -->
+<!-- # 3) and linear mediator and binary probit outcome models.  -->
+<!-- # In addition, the binary outcome model cannot include a treatment-mediator interaction term. -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Autonomy", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "negative", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "negative", main = "Total variance") -->
+<!-- ``` -->
+<!-- Rho at which ACME = 0 is -0.2, which is reasonably far from 0 and has a tight 95% CI, indicating that our estimates for the mediating role of autonomy are reasonably robust to the presence of unobserved pre-treatment confounders. -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- **Estimates:** -->
+<!-- ```{r GAD2-mediation-autonomy-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(GAD2_score ~ autonomy_karasek.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r GAD2-mediation-autonomy-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "autonomy_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r GAD2-mediation-autonomy-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "autonomy_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r GAD2-mediation-autonomy-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "autonomy_karasek.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+
+<!-- #### Table output   -->
+<!-- ```{r GAD2-mediation-autonomy-interaction-table} -->
+<!-- autonomy_table_GAD2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Autonomy", int_test = int_test_gen_health) |>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(autonomy_table_GAD2, "Healthcare workers") -->
+<!-- ``` -->
+
+
+<!-- ```{r GAD2-mediation-autonomy-interaction-key-table} -->
+<!-- autonomy_table_GAD2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Autonomy", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(autonomy_table_GAD2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Work social support   -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r GAD2-mediation-social-support-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = social_support_karasek.st_23, y = GAD2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction)   -->
+<!-- ```{r GAD2-mediation-social-support} -->
+<!-- # Mediation using the `mediation` package -->
+<!-- #  No interaction #### -->
+<!-- # Model with mediator as the outcome:  -->
+<!-- med.fit <- lm(social_support_karasek.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(GAD2_score ~ social_support_karasek.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "social_support_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "social_support_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+
+<!-- ```{r GAD2-mediation-social-support-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Social support", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "negative", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "negative", main = "Total variance") -->
+<!-- ``` -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- ```{r GAD2-mediation-social-support-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(GAD2_score ~ social_support_karasek.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r GAD2-mediation-social-support-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "social_support_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r GAD2-mediation-social-support-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "social_support_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r GAD2-mediation-social-support-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "social_support_karasek.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+<!-- #### Table output   -->
+
+<!-- ```{r GAD2-mediation-social-support-interaction-table} -->
+<!-- social_support_table_GAD2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Work social support", int_test = int_test_gen_health)|>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(social_support_table_GAD2, "Healthcare workers") -->
+<!-- ``` -->
+
+<!-- "The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)." -->
+<!-- ```{r GAD2-mediation-social-support-interaction-key-table} -->
+<!-- social_support_table_GAD2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Work social support", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(social_support_table_GAD2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Demands -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r GAD2-mediation-demands-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = demands_karasek.st_23, y = GAD2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction) -->
+<!-- ```{r GAD2-mediation-demands} -->
+<!-- # Mediation using the `mediation` package -->
+<!-- #  No interaction #### -->
+<!-- # Model with mediator as the outcome:  -->
+<!-- med.fit <- lm(demands_karasek.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(GAD2_score ~ demands_karasek.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "demands_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "demands_karasek.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+
+<!-- ```{r GAD2-mediation-demands-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Demands", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "positive", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "positive", main = "Total variance") -->
+<!-- ``` -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- ```{r GAD2-mediation-demands-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(GAD2_score ~ demands_karasek.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r GAD2-mediation-demands-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "demands_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r GAD2-mediation-demands-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "demands_karasek.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r GAD2-mediation-demands-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "demands_karasek.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+<!-- #### Table output   -->
+
+<!-- ```{r GAD2-mediation-demands-interaction-table} -->
+<!-- demands_table_GAD2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Demands", int_test = int_test_gen_health)|>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(demands_table_GAD2, "Healthcare workers") -->
+<!-- ``` -->
+
+<!-- "The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)." -->
+<!-- ```{r GAD2-mediation-demands-interaction-key-table} -->
+<!-- demands_table_GAD2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Demands", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(demands_table_GAD2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Efforts-Rewards Ratio -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r GAD2-mediation-efforts-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = ER_ratio.st_23, y = GAD2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction) -->
+<!-- ```{r GAD2-mediation-efforts-rewards} -->
+<!-- # Mediation using the `mediation` package -->
+<!-- #  No interaction #### -->
+<!-- # Model with mediator as the outcome:  -->
+<!-- med.fit <- lm(ER_ratio.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(GAD2_score ~ ER_ratio.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "ER_ratio.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "ER_ratio.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+
+<!-- ```{r GAD2-mediation-efforts-rewards-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Efforts-Rewards ratio", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "positive", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "positive", main = "Total variance") -->
+<!-- ``` -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- ```{r GAD2-mediation-efforts-rewards-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(GAD2_score ~ ER_ratio.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r GAD2-mediation-efforts-rewards-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "ER_ratio.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r GAD2-mediation-efforts-rewards-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "ER_ratio.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r GAD2-mediation-efforts-rewards-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "ER_ratio.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+<!-- #### Table output   -->
+
+<!-- ```{r GAD2-mediation-ERI-interaction-table} -->
+<!-- eri_table_GAD2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "ERI", int_test = int_test_gen_health)|>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(eri_table_GAD2, "Healthcare workers") -->
+<!-- ``` -->
+
+<!-- "The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)." -->
+<!-- ```{r GAD2-mediation-ERI-interaction-key-table} -->
+<!-- eri_table_GAD2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "ERI", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(eri_table_GAD2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Overcommitment -->
+<!-- #### Linear relationship between outcome and mediators -->
+<!-- ```{r GAD2-mediation-overcommitment-linear} -->
+<!-- dat_mediation |>  -->
+<!--   ggplot(aes(x = overcommitment_siegrist.st_23, y = GAD2_score))+ -->
+<!--   geom_point()+geom_smooth() -->
+<!-- ``` -->
+
+<!-- #### Simple mediation model (no interaction) -->
+<!-- ```{r GAD2-mediation-overcommitment} -->
+<!-- # Mediation using the `mediation` package -->
+<!-- #  No interaction #### -->
+<!-- # Model with mediator as the outcome:  -->
+<!-- med.fit <- lm(overcommitment_siegrist.st_23 ~ treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation) -->
+
+<!-- # Model with primary outcome and including mediator -->
+<!-- out.fit <- lm(GAD2_score ~ overcommitment_siegrist.st_23 + treat -->
+<!--               # confounders as covariates -->
+<!--               + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + -->
+<!--                 Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc -->
+<!--               , data = dat_mediation -->
+<!--               # , family = binomial("probit") -->
+<!-- ) -->
+
+<!-- # Mediate function to estimate ACME (average causal mediation effects) and ADE (average direct effects) -->
+<!-- med.out <- mediate(med.fit, out.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out) -->
+
+<!-- med.out_key <- mediate(med.fit, out.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23", -->
+<!--                    control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--                    boot = TRUE, -->
+<!--                    robustSE = TRUE, # ignored when boot = TRUE -->
+<!--                    sims = 1000);summary(med.out_key) -->
+<!-- ``` -->
+
+<!-- #### Sensitivity analysis for assumption of sequential ignorability   -->
+
+<!-- ```{r GAD2-mediation-overcommitment-plot, fig.width = 9, fig.height = 3} -->
+<!-- ## Sensitivity analysis for assumption of sequential ignorability #### -->
+<!-- sens.out <- medsens(med.out, rho.by = 0.1, effect.type = "indirect", sims = 1000) -->
+<!-- summary(sens.out) -->
+<!-- par(mfrow = c(1,3)) -->
+<!-- plot(sens.out, sens.par = "rho", main = "Overcommitment", ylim = c(-0.2, 0.2)) -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "residual", sign.prod = "positive", main = "Residual variance") -->
+<!-- plot(sens.out, sens.par = "R2", r.type = "total", sign.prod = "positive", main = "Total variance") -->
+<!-- ``` -->
+
+<!-- #### Mediator-treatment interaction -->
+
+<!-- ```{r GAD2-mediation-overcommitment-interaction} -->
+<!-- # Alternative outcome model with treatment-mediator interaction -->
+<!-- out_int.fit <- lm(GAD2_score ~ overcommitment_siegrist.st_23*treat  -->
+<!--                   + age_cat + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc + migration_status.inc + living_situation_rec.inc,  -->
+<!--                   data = dat_mediation) -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Healthcare workers (treatment)** -->
+<!-- ```{r GAD2-mediation-overcommitment-interaction-test-gen-health} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_health <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Healthcare worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_health) -->
+<!-- test.TMint(med_int.out_gen_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_health <- test.TMint(med_int.out_gen_health, conf.level = .95);int_test_gen_health # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- **Test: the general workforce (control) vs Other essential workers (treatment)** -->
+<!-- ```{r GAD2-mediation-overcommitment-interaction-test-gen-key} -->
+<!-- # Mediate function to test for treatment-mediator interaction -->
+<!-- med_int.out_gen_key <- mediate( -->
+<!--   med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",  -->
+<!--   control.value = "General workforce", treat.value = "Other essential worker", -->
+<!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) -->
+<!-- summary(med_int.out_gen_key) -->
+<!-- test.TMint(med_int.out_gen_key, conf.level = .95) # test for statistical significance of the treatment-mediator interaction -->
+<!-- int_test_gen_key <- test.TMint(med_int.out_gen_key, conf.level = .95);int_test_gen_key # test for statistical significance of the treatment-mediator interaction -->
+<!-- ``` -->
+
+<!-- <!-- **Test: Other essential workers (control) vs Healthcare workers (treatment)** --> -->
+<!-- <!-- ```{r GAD2-mediation-overcommitment-interaction-test-key-health} --> -->
+<!-- <!-- # Mediate function to test for treatment-mediator interaction --> -->
+<!-- <!-- med_int.out_key_health <- mediate( --> -->
+<!-- <!--   med.fit, out_int.fit, treat = "treat", mediator = "overcommitment_siegrist.st_23",  --> -->
+<!-- <!--   control.value = "Other essential worker", treat.value = "Healthcare worker", --> -->
+<!-- <!--   boot = TRUE, boot.ci.type = "bca", sims = 1000) --> -->
+<!-- <!-- summary(med_int.out_key_health) --> -->
+<!-- <!-- test.TMint(med_int.out_key_health, conf.level = .95) # test for statistical significance of the treatment-mediator interaction --> -->
+<!-- <!-- ``` --> -->
+
+<!-- #### Table output   -->
+
+<!-- ```{r GAD2-mediation-Overcommitment-interaction-table} -->
+<!-- overcommitment_table_GAD2 <- table_function(mod.0 = med.out, mod.interaction = med_int.out_gen_health, mediator = "Overcommitment", int_test = int_test_gen_health)|>  -->
+<!--   mutate(comparison_g = "Healthcare workers") -->
+<!-- output_table(overcommitment_table_GAD2, "Healthcare workers") -->
+<!-- ``` -->
+
+<!-- "The proportion mediated makes sense only when the **sign of the sum of the two average causal mediation effects** (i.e., the numerator) is the **same as** the **sign of the average total effect** (i.e., the denominator)." -->
+<!-- ```{r GAD2-mediation-Overcommitment-interaction-key-table} -->
+<!-- overcommitment_table_GAD2_key <- table_function(mod.0 = med.out_key, mod.interaction = med_int.out_gen_key, mediator = "Overcommitment", int_test = int_test_gen_key)|>  -->
+<!--   mutate(comparison_g = "other essential workers") -->
+<!-- output_table(overcommitment_table_GAD2_key, "other essential workers") -->
+<!-- ``` -->
+
+<!-- ### Combined table -->
+<!-- #### General vs. Healthcare workers -->
+<!-- ```{r GAD2-final-table-gen-health} -->
+<!-- final_table_GAD2_gen_health <- cbind( -->
+<!--   autonomy_table_GAD2 |> select(average_effect),  -->
+<!--   autonomy_table_GAD2 |> select(no_interaction_full), -->
+<!--   social_support_table_GAD2 |> select(no_interaction_full), -->
+<!--   demands_table_GAD2 |> select(no_interaction_full), -->
+<!--   eri_table_GAD2 |> select(no_interaction_full), -->
+<!--   overcommitment_table_GAD2 |> select(no_interaction_full) -->
+<!--   ) -->
+<!-- colnames(final_table_GAD2_gen_health) <- c("Average effect",  -->
+<!--                                       "Autonomy", -->
+<!--                                       "Social support", "Demands", "ERI", "Overcommitment") -->
+<!-- final_table_GAD2_gen_health |>  -->
+<!--   filter(`Average effect` != "Avg. proportion mediated") |>  -->
+<!--   myflextable() |>   -->
+<!--     # merge_at(i = 3, j = 3:4) |>  -->
+<!--     # merge_at(i = 5, j = 3:4) |>  -->
+<!--     # labelizor(part = "header", labels = c(average_effect = "Average effect",no_interaction_full = "No\ninteraction",  -->
+<!--     #                                       under_control_full = "Within\nreference", under_treatment_full = "Within\ncomparison")) |>  -->
+<!--     add_header_row(values = c("","Without interaction", "Without interaction", "Without interaction", "Without interaction", "Without interaction"), top = TRUE, ) |> -->
+<!--     merge_h(part = "header") |>  -->
+<!--     width(j = 1, width = 3.3, unit = "cm") |>  -->
+<!--     width(j = 2:6, width = 4, unit = "cm") |>  -->
+<!--     theme_zebra(odd_header = "transparent") |>  -->
+<!--     border_remove() |>  -->
+<!--     hline_bottom() |> hline_top() |>  -->
+<!--     hline(part = "header", j = 2:6) |>  -->
+<!--     align(j = 2:6, align = "center", part = "all") |> -->
+<!--     align(j = 1, align = "center", part = "header") |>  -->
+<!--     add_footer_lines(paste0("Note: Each cell shows the point estimate and its corresponding 95% confidence interval. Results are from models without exposure-mediator interaction terms, and the groups of comparison are between the general workforce (reference group) and Healthcare workers.")) -->
+<!-- ``` -->
+
+<!-- #### General vs Key workers -->
+<!-- ```{r GAD2-final-table-gen-key} -->
+<!-- final_table_GAD2_gen_key <- cbind( -->
+<!--   autonomy_table_GAD2_key |> select(average_effect), autonomy_table_GAD2_key |> select(no_interaction_full),  -->
+<!--   social_support_table_GAD2_key |> select(no_interaction_full), -->
+<!--   demands_table_GAD2_key |> select(no_interaction_full), -->
+<!--   eri_table_GAD2_key |> select(no_interaction_full), -->
+<!--   overcommitment_table_GAD2_key |> select(no_interaction_full) -->
+<!--   ) -->
+<!-- colnames(final_table_GAD2_gen_key) <- c("Average effect", "Autonomy", "Social support", "Demands", "ERI", "Overcommitment") -->
+<!-- final_table_GAD2_gen_key |>  -->
+<!--   filter(`Average effect` != "Avg. proportion mediated") |>  -->
+<!--   myflextable() |>   -->
+<!--     # merge_at(i = 3, j = 3:4) |>  -->
+<!--     # merge_at(i = 5, j = 3:4) |>  -->
+<!--     labelizor(part = "header", labels = c(average_effect = "Average effect",no_interaction_full = "No\ninteraction",  -->
+<!--                                           under_control_full = "Within\nreference", under_treatment_full = "Within\ncomparison")) |>  -->
+<!--     add_header_row(values = c("","Without interaction", "Without interaction", "Without interaction", "Without interaction", "Without interaction"), top = TRUE, ) |> -->
+<!--     merge_h(part = "header") |>  -->
+<!--     width(j = 1, width = 3.1, unit = "cm") |>  -->
+<!--     width(j = 2:6, width = 4, unit = "cm") |>  -->
+<!--     theme_zebra(odd_header = "transparent") |>  -->
+<!--     border_remove() |>  -->
+<!--     hline_bottom() |> hline_top() |>  -->
+<!--     hline(part = "header", j = 2:6) |>  -->
+<!--     align(j = 2:6, align = "center", part = "all") |> -->
+<!--     align(j = 1, align = "center", part = "header") |>  -->
+<!--     add_footer_lines(paste0("Note: Each cell shows the point estimate and its corresponding 95% confidence interval. Results are from models without exposure-mediator interaction terms, and the groups of comparison are between the general workforce (reference group) and key workers.")) -->
+<!-- ``` -->
+
+<!-- ```{r GAD2-final-data-table} -->
+<!-- # Save the final data table to be able to easily refer to the estimates and p values -->
+<!-- final_data_table_GAD2_mediation <- rbind( -->
+<!--   autonomy_table_GAD2, -->
+<!--   social_support_table_GAD2, -->
+<!--   demands_table_GAD2, -->
+<!--   eri_table_GAD2, -->
+<!--   overcommitment_table_GAD2, -->
+<!--   autonomy_table_GAD2_key, -->
+<!--   social_support_table_GAD2_key, -->
+<!--   demands_table_GAD2_key, -->
+<!--   eri_table_GAD2_key, -->
+<!--   overcommitment_table_GAD2_key -->
+<!-- ) -->
+
+<!-- saveRDS(final_data_table_GAD2_mediation, file = here("output", "final_data_table_GAD2_mediation.rds")) -->
+<!-- ``` -->
+
+<!-- ## SEM -->
+<!-- Basic structural equation model (experimental) -->
+<!-- ```{r SEM} -->
+<!-- dat_sem <- dat_scaled |> mutate( -->
+<!--   hcw = case_when(is.na(occupation_type.single) | occupation_type.single == "Other essential worker" ~ NA, occupation_type.single == "Healthcare worker" ~ 1, .default = 0), -->
+<!--   key_worker = case_when(is.na(occupation_type.single) | occupation_type.single == "Healthcare worker" ~ NA, occupation_type.single == "Other essential worker" ~ 1, .default = 0), -->
+<!--   general_worker = case_when(is.na(occupation_type.single) ~ NA, occupation_type.single == "General workforce" ~ 1, .default = 0), -->
+<!--   Pre_existing_MH_condition.inc = case_when(is.na(Pre_existing_MH_condition.inc) ~ NA, Pre_existing_MH_condition.inc == "Yes" ~ 1,.default = 0), -->
+<!--   Pre_existing_physical_condition.inc = case_when(is.na(Pre_existing_physical_condition.inc) ~ NA, Pre_existing_physical_condition.inc == "Pre-existing" ~ 1, .default = 0), -->
+<!--   sex_en.inc = case_when(sex_en.inc == "Male" ~ 0, sex_en.inc == "Female" ~ 1) -->
+<!-- ) -->
+
+<!-- # First attempt #### -->
+<!-- model <- ' -->
+<!--   PFI_score.st_23 ~ autonomy_karasek.st_23 + c_age_nov20 + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc -->
+<!--   PFI_score.st_23 ~ hcw -->
+<!--   # PFI_score.st_23 ~ key_worker -->
+<!--   hcw ~ c_age_nov20 + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc -->
+<!--   # key_worker ~ c_age_nov20 + sex_en.inc + education_rec_en.inc + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc -->
+<!--   autonomy_karasek.st_23 ~ c_age_nov20 + sex_en.inc + education_rec_en.inc + hcw + Pre_existing_MH_condition.inc + Pre_existing_physical_condition.inc -->
+<!-- ' -->
+<!-- fit <- sem(model, data = dat_sem, ordered = "education_rec_en.inc", ) -->
+<!-- # summary(fit) -->
+
+<!-- labels = list( -->
+<!--   PFI_score.st_23 = "Professional fulfillment (PFI)", -->
+<!--   c_age_nov20 = "Age",  -->
+<!--   sex_en.inc = "Sex", -->
+<!--   education_rec_en.inc = "Education", -->
+<!--   hcw = "Healthcare worker", -->
+<!--   autonomy_karasek.st_23 = "Autonomy", -->
+<!--   Pre_existing_MH_condition.inc = "Mental health condition", -->
+<!--   Pre_existing_physical_condition.inc = "Physical condition" -->
+<!-- ) -->
+
+<!-- lavaanPlot( -->
+<!--   model = fit, node_options = list(shape = "box", fontname = "Helvetica"), -->
+<!--   graph_options = list(rankdir = "LR"), -->
+<!--   edge_options = list(color = "grey"),  -->
+<!--   coefs = TRUE, -->
+<!--   labels = labels, -->
+<!--   sig = .05, -->
+<!--   stand = TRUE, -->
+<!--   stars = TRUE, -->
+<!--   digits = 2 -->
+<!-- ) -->
+<!-- ``` -->
